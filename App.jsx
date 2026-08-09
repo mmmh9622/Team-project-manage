@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { storage } from "./storageAdapter";
 import {
   Plus, MessageCircle, ChevronDown, ChevronUp, CheckCircle2, Circle, Users,
@@ -448,16 +448,15 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
       </div>
 
       <div className="composer announceComposer">
-        <textarea
-          value={draft}
-          onChange={(e) => {
-            setDraft(e.target.value);
-            autoResize(e.target);
-          }}
-          placeholder="전체 팀에 공지할 내용을 남겨보세요"
-          className="composerInput autoGrow"
-          rows={2}
-        />
+        <div className="growWrap" data-value={draft}>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="전체 팀에 공지할 내용을 남겨보세요"
+            className="composerInput autoGrow"
+            rows={2}
+          />
+        </div>
         <div className="announceComposerActions">
           <label className="importantCheck">
             <input
@@ -546,13 +545,9 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
 
                   {editingId === a.id ? (
                     <div className="editBox">
-                      <textarea
+                      <AutoGrowTextarea
                         value={editDraft}
-                        onChange={(e) => {
-                          setEditDraft(e.target.value);
-                          autoResize(e.target);
-                        }}
-                        ref={autoResize}
+                        onCommit={setEditDraft}
                         className="composerInput autoGrow"
                         rows={2}
                       />
@@ -676,6 +671,7 @@ function ProjectsTab({
         accessUsers: [],
         assignee: "",
         dueDate: "",
+        description: "",
       },
     ]);
     setName("");
@@ -899,6 +895,33 @@ function autoResize(el) {
   if (!el) return;
   el.style.height = "auto";
   el.style.height = el.scrollHeight + "px";
+}
+
+// Controlled auto-growing textarea. Height is recalculated with
+// useLayoutEffect on every value change (including the very first render),
+// so it never depends on ref-callback/font-load timing quirks -- the box
+// is always the right height for whatever text is actually in it.
+function AutoGrowTextarea({ value, onCommit, className, placeholder, rows = 2 }) {
+  const [text, setText] = useState(value || "");
+
+  useEffect(() => {
+    setText(value || "");
+  }, [value]);
+
+  return (
+    <div className="growWrap" data-value={text}>
+      <textarea
+        className={className}
+        rows={rows}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => {
+          if (text !== (value || "")) onCommit(text);
+        }}
+        placeholder={placeholder}
+      />
+    </div>
+  );
 }
 
 /* ============================================================
@@ -1220,13 +1243,41 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
           return;
         }
 
-        updateTasks((prev) => [...prev, ...importedTasks, ...importedMemos]);
-        const subtaskCount = importedTasks.reduce((sum, t) => sum + t.subtasks.length, 0);
+        // Skip anything that already exists in this project (same type + title + body/description),
+        // so re-importing the same backup file doesn't create duplicates.
+        const existingSignatures = new Set(
+          tasks.map(
+            (t) => `${t.type || "task"}::${t.text}::${t.type === "memo" ? t.body || "" : t.description || ""}`
+          )
+        );
+        const dedupedTasks = [];
+        importedTasks.forEach((t) => {
+          const sig = `task::${t.text}::${t.description || ""}`;
+          if (existingSignatures.has(sig)) return;
+          existingSignatures.add(sig);
+          dedupedTasks.push(t);
+        });
+        const dedupedMemos = [];
+        importedMemos.forEach((m) => {
+          const sig = `memo::${m.text}::${m.body || ""}`;
+          if (existingSignatures.has(sig)) return;
+          existingSignatures.add(sig);
+          dedupedMemos.push(m);
+        });
+        const skippedCount = importedTasks.length + importedMemos.length - dedupedTasks.length - dedupedMemos.length;
+
+        if (dedupedTasks.length === 0 && dedupedMemos.length === 0) {
+          setImportInfo({ ok: true, message: "이미 다 가져온 내용이라 새로 추가된 게 없어요." });
+          return;
+        }
+
+        updateTasks((prev) => [...prev, ...dedupedTasks, ...dedupedMemos]);
+        const subtaskCount = dedupedTasks.reduce((sum, t) => sum + t.subtasks.length, 0);
         setImportInfo({
           ok: true,
-          message: `업무 ${importedTasks.length}개, 세부할일 ${subtaskCount}개${
-            importedMemos.length ? `, 메모 ${importedMemos.length}개` : ""
-          }를 가져왔어요.`,
+          message: `업무 ${dedupedTasks.length}개, 세부할일 ${subtaskCount}개${
+            dedupedMemos.length ? `, 메모 ${dedupedMemos.length}개` : ""
+          }를 가져왔어요.${skippedCount > 0 ? ` (중복 ${skippedCount}개는 건너뜀)` : ""}`,
         });
       } catch (err) {
         setImportInfo({ ok: false, message: "파일을 읽는 중 문제가 생겼어요. 올바른 백업 파일인지 확인해주세요." });
@@ -1377,6 +1428,17 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
           </div>
         </div>
       )}
+
+      <div className="projDescSection">
+        <div className="taskFieldLabel block">프로젝트 설명</div>
+        <AutoGrowTextarea
+          className="composerInput autoGrow"
+          rows={2}
+          value={project.description || ""}
+          onCommit={(val) => onUpdate({ description: val })}
+          placeholder="이 프로젝트에 대한 설명을 남겨보세요"
+        />
+      </div>
 
       <div className="taskBoardToolbar">
         <div className="viewSwitch">
@@ -1608,34 +1670,22 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
                       {isMemo ? (
                         <>
                           <div className="taskFieldLabel block">회의 / 메모 내용</div>
-                          <textarea
+                          <AutoGrowTextarea
                             className="composerInput autoGrow"
                             rows={4}
-                            defaultValue={t.body || ""}
-                            ref={autoResize}
-                            onInput={(e) => autoResize(e.target)}
-                            onBlur={(e) => {
-                              if (e.target.value !== (t.body || "")) {
-                                patchTask(t.id, { body: e.target.value });
-                              }
-                            }}
+                            value={t.body || ""}
+                            onCommit={(val) => patchTask(t.id, { body: val })}
                             placeholder="회의 내용, 결정 사항 등을 기록하세요"
                           />
                         </>
                       ) : (
                         <>
                           <div className="taskFieldLabel block">텍스트</div>
-                          <textarea
+                          <AutoGrowTextarea
                             className="composerInput autoGrow"
                             rows={2}
-                            defaultValue={t.description || ""}
-                            ref={autoResize}
-                            onInput={(e) => autoResize(e.target)}
-                            onBlur={(e) => {
-                              if (e.target.value !== (t.description || "")) {
-                                patchTask(t.id, { description: e.target.value });
-                              }
-                            }}
+                            value={t.description || ""}
+                            onCommit={(val) => patchTask(t.id, { description: val })}
                             placeholder="설명을 남겨보세요"
                           />
 
@@ -2127,15 +2177,11 @@ function WeeklyPersonDetailPage({ user, weeklyTasks, updateWeeklyTasks, projects
                   </button>
 
                   <div className="taskFieldLabel block">텍스트</div>
-                  <textarea
+                  <AutoGrowTextarea
                     className="composerInput autoGrow"
                     rows={2}
-                    defaultValue={w.body || ""}
-                    ref={autoResize}
-                    onInput={(e) => autoResize(e.target)}
-                    onBlur={(e) => {
-                      if (e.target.value !== (w.body || "")) patchItem(w.id, { body: e.target.value });
-                    }}
+                    value={w.body || ""}
+                    onCommit={(val) => patchItem(w.id, { body: val })}
                     placeholder="메모를 적어보세요..."
                   />
 
@@ -3031,7 +3077,7 @@ const CSS = `
 }
 
 .whoAmI { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-soft); padding: 6px 10px; border-radius: 7px; }
-.dailyPage { max-width: 680px; margin: 0 auto; }
+.tabPane.dailyPage { max-width: 680px; margin: 0 auto; }
 .dailyTitle { display: flex; align-items: center; gap: 7px; font-size: 15px; font-weight: 800; }
 .dailyHint { font-size: 11.5px; color: var(--ink-soft); margin: -4px 0 14px; line-height: 1.5; }
 
@@ -3116,12 +3162,12 @@ const CSS = `
 .tabBtn.active { background: var(--surface); color: var(--teal-deep); }
 .tabDot { width: 7px; height: 7px; border-radius: 50%; background: var(--coral); position: absolute; top: 6px; right: 6px; }
 
-.main { padding: 0 20px; max-width: 760px; margin: 0 auto; }
-.tabPane { background: var(--surface); border-radius: 0 10px 10px 10px; padding: 20px; margin-top: -1px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+.main { padding: 0 20px; max-width: 1180px; margin: 0 auto; }
+.tabPane { background: var(--surface); border-radius: 0 10px 10px 10px; padding: 20px; margin-top: -1px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); max-width: 820px; margin-left: auto; margin-right: auto; }
 
 .composer { display: flex; gap: 8px; margin-bottom: 18px; align-items: flex-start; }
 .composerInput {
-  flex: 1; resize: none; border: 1px solid var(--line); border-radius: 8px;
+  flex: 1; width: 100%; resize: none; border: 1px solid var(--line); border-radius: 8px;
   padding: 10px 12px; font-size: 13.5px; font-family: inherit; min-height: 40px; max-height: 240px;
 }
 .composerInput:focus { outline: none; border-color: var(--teal); }
@@ -3279,6 +3325,7 @@ const CSS = `
   font-size: 11.5px; color: var(--ink-soft); cursor: pointer;
 }
 .projFeedSection { border-top: 1px solid var(--line); padding-top: 14px; }
+.projDescSection { margin: 10px 0 16px; }
 .projModalRow { display: flex; gap: 8px; }
 .projModalSection { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 2px; }
 .projModalLabel { font-size: 11.5px; font-weight: 700; color: var(--ink-soft); margin-bottom: 8px; }
@@ -3321,7 +3368,7 @@ const CSS = `
 .subtaskCheck .done { text-decoration: line-through; color: var(--ink-soft); }
 .subtaskRemove { background: transparent; border: none; color: var(--ink-soft); cursor: pointer; padding: 3px; flex-shrink: 0; }
 
-.projPage { max-width: 820px; }
+.tabPane.projPage { max-width: 1140px; }
 .projPageHeader { margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
 .minorActions { display: flex; gap: 4px; }
 .minorIconBtn {
@@ -3351,7 +3398,30 @@ const CSS = `
 .importBanner.error { background: var(--warn-bg); color: var(--warn-ink); }
 .importBanner .iconBtn { margin-left: auto; padding: 2px; }
 
-.autoGrow { resize: none; overflow: hidden; }
+.growWrap {
+  display: grid;
+  width: 100%;
+}
+.growWrap::after {
+  content: attr(data-value) " ";
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  visibility: hidden;
+  grid-area: 1 / 1 / 2 / 2;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  font-size: 13.5px;
+  font-family: inherit;
+  line-height: normal;
+  min-height: 40px;
+}
+.growWrap > textarea {
+  grid-area: 1 / 1 / 2 / 2;
+  width: 100%;
+  height: 100%;
+}
+.autoGrow { resize: none; overflow: hidden; max-height: none; }
 
 .ganttWrap { padding-top: 4px; }
 .ganttToolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
@@ -3465,7 +3535,7 @@ const CSS = `
   .roleBtn, .pendingActions, .deleteConfirmRow { margin-left: 0; }
   .dailyLayout { flex-direction: column; }
   .dailySide { width: 100%; }
-  .dailyPage { max-width: 100%; }
+  .tabPane.dailyPage { max-width: 100%; }
 
   /* bigger, easier tap targets */
   .iconBtn, .projIconBtn, .minorIconBtn, .subtaskRemove { padding: 8px; }
