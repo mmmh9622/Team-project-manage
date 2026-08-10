@@ -673,6 +673,31 @@ function ProjectsTab({
   const [newTeam, setNewTeam] = useState(teams[0] || "");
   const [draggedId, setDraggedId] = useState(null);
   const [openProjectId, setOpenProjectId] = useState(null);
+
+  // Let the real browser/mobile back button close the detail view instead
+  // of leaving the app -- best effort, falls back gracefully if the
+  // History API is unavailable in this environment.
+  useEffect(() => {
+    const handler = () => setOpenProjectId(null);
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, []);
+
+  const openProjectDetail = (id) => {
+    try {
+      window.history.pushState({ jtmDetail: "project" }, "");
+    } catch (e) {}
+    setOpenProjectId(id);
+  };
+
+  const closeProjectDetail = () => {
+    setOpenProjectId(null);
+    try {
+      if (window.history.state && window.history.state.jtmDetail === "project") {
+        window.history.back();
+      }
+    } catch (e) {}
+  };
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const CARD_COLORS = ["#087FBE", "#3976BA", "#FF6F4D", "#7E57C2", "#3E8E5B", "#C2872F"];
@@ -682,20 +707,17 @@ function ProjectsTab({
     return CARD_COLORS[h];
   };
 
-  const canSeeTeam = (team) => isAdmin || !team || accessibleTeams.includes(team);
-  const canSeeProject = (p) => {
+  const canEnterProject = (p) => {
     if (p.accessUsers && p.accessUsers.length > 0) {
       return isAdmin || p.accessUsers.includes(currentUser.id);
     }
-    return canSeeTeam(p.team);
+    return true;
   };
 
-  const visibleProjects = projects.filter(canSeeProject);
-
-  const groups = [...teams.filter(canSeeTeam), null].map((team) => ({
+  const groups = [...teams, null].map((team) => ({
     team,
     label: team || "공통",
-    items: visibleProjects.filter((p) => (p.team || null) === team),
+    items: projects.filter((p) => (p.team || null) === team),
   }));
 
   const addProject = () => {
@@ -759,7 +781,7 @@ function ProjectsTab({
         tasks={tasks.filter((t) => t.projectId === openProject.id)}
         updateTasks={updateTasks}
         onUpdate={(patch) => updateProject(openProject.id, patch)}
-        onBack={() => setOpenProjectId(null)}
+        onBack={closeProjectDetail}
         onDelete={() => {
           setOpenProjectId(null);
           deleteProject(openProject.id);
@@ -804,7 +826,7 @@ function ProjectsTab({
         </div>
       )}
 
-      {visibleProjects.length === 0 && (
+      {projects.length === 0 && (
         <div className="emptyState">
           <FolderKanban size={22} />
           <p>등록된 프로젝트가 없어요.</p>
@@ -822,20 +844,22 @@ function ProjectsTab({
               <div className="projCardGrid">
                 {g.items.map((p) => {
                   const stats = taskStats(p.id);
+                  const entryAllowed = canEnterProject(p);
                   return (
                     <div
                       key={p.id}
-                      className="projCard"
-                      draggable
-                      onDragStart={() => setDraggedId(p.id)}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={() => handleDrop(p.id)}
+                      className={"projCard" + (entryAllowed ? "" : " locked")}
+                      draggable={entryAllowed}
+                      onDragStart={() => entryAllowed && setDraggedId(p.id)}
+                      onDragOver={(e) => entryAllowed && e.preventDefault()}
+                      onDrop={() => entryAllowed && handleDrop(p.id)}
                     >
                       <div className="projCardTop">
                         <GripVertical size={14} className="dragHandle" />
                         <select
                           className="projTeamBadge"
                           value={p.team || ""}
+                          disabled={!entryAllowed}
                           onChange={(e) => updateProject(p.id, { team: e.target.value || null })}
                           onClick={(e) => e.stopPropagation()}
                         >
@@ -846,50 +870,64 @@ function ProjectsTab({
                             </option>
                           ))}
                         </select>
-                        <button
-                          className="projIconBtn"
-                          title="접근 권한 / 담당자"
-                          onClick={() => setOpenProjectId(p.id)}
-                        >
-                          <Users size={14} />
-                        </button>
-                        <button
-                          className="projIconBtn"
-                          title="수정"
-                          onClick={() => setOpenProjectId(p.id)}
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        {confirmDeleteId === p.id ? (
-                          <div className="projDeleteConfirm" onClick={(e) => e.stopPropagation()}>
-                            <button className="btnDangerSmall" onClick={() => deleteProject(p.id)}>
-                              삭제
+                        {entryAllowed && (
+                          <>
+                            <button
+                              className="projIconBtn"
+                              title="접근 권한 / 담당자"
+                              onClick={() => openProjectDetail(p.id)}
+                            >
+                              <Users size={14} />
                             </button>
-                            <button className="btnGhost small" onClick={() => setConfirmDeleteId(null)}>
-                              취소
+                            <button
+                              className="projIconBtn"
+                              title="수정"
+                              onClick={() => openProjectDetail(p.id)}
+                            >
+                              <Pencil size={14} />
                             </button>
-                          </div>
-                        ) : (
-                          <button
-                            className="projIconBtn danger"
-                            title="삭제"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setConfirmDeleteId(p.id);
-                            }}
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                            {confirmDeleteId === p.id ? (
+                              <div className="projDeleteConfirm" onClick={(e) => e.stopPropagation()}>
+                                <button className="btnDangerSmall" onClick={() => deleteProject(p.id)}>
+                                  삭제
+                                </button>
+                                <button className="btnGhost small" onClick={() => setConfirmDeleteId(null)}>
+                                  취소
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                className="projIconBtn danger"
+                                title="삭제"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmDeleteId(p.id);
+                                }}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
 
-                      <div className="projCardBody" onClick={() => setOpenProjectId(p.id)}>
+                      <div
+                        className="projCardBody"
+                        onClick={() => entryAllowed && openProjectDetail(p.id)}
+                        style={{ cursor: entryAllowed ? "pointer" : "not-allowed" }}
+                      >
                         <span className="projColorDot" style={{ background: colorFor(p.id) }} />
                         <div className="projCardTitle">{p.name}</div>
-                        <div className="projCardMeta">
-                          {stats.total > 0 ? `${stats.done} / ${stats.total}건 완료` : "등록된 업무 없음"}
-                        </div>
-                        {(p.assignee || p.dueDate) && (
+                        {entryAllowed ? (
+                          <div className="projCardMeta">
+                            {stats.total > 0 ? `${stats.done} / ${stats.total}건 완료` : "등록된 업무 없음"}
+                          </div>
+                        ) : (
+                          <div className="projAccessTag">
+                            <Lock size={10} /> 접근 권한이 없어요
+                          </div>
+                        )}
+                        {entryAllowed && (p.assignee || p.dueDate) && (
                           <div className="projCardAssignee">
                             <Calendar size={11} />
                             {p.assignee}
@@ -897,7 +935,7 @@ function ProjectsTab({
                             {p.dueDate}
                           </div>
                         )}
-                        {p.accessUsers && p.accessUsers.length > 0 && (
+                        {entryAllowed && p.accessUsers && p.accessUsers.length > 0 && (
                           <div className="projAccessTag">
                             <Lock size={10} /> {p.accessUsers.length}명만 접근 가능
                           </div>
@@ -1428,7 +1466,8 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
       if (statusFilter === "memo") return t.type === "memo";
       return true;
     })
-    .filter((t) => !search.trim() || t.text.toLowerCase().includes(search.trim().toLowerCase()));
+    .filter((t) => !search.trim() || t.text.toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
   // ---- Gantt range + timeline calculation ----
   const dated = tasks.filter((t) => t.type !== "memo" && t.startDate && t.dueDate);
@@ -1675,7 +1714,7 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
             {filtered.length === 0 && <p className="mutedText">표시할 업무가 없어요.</p>}
             {filtered.map((t) => {
               const isMemo = t.type === "memo";
-              const isCollapsed = collapsed[t.id];
+              const isCollapsed = collapsed[t.id] ?? true;
               const subDone = (t.subtasks || []).filter((s) => s.done).length;
               const subTotal = (t.subtasks || []).length;
 
@@ -2069,6 +2108,28 @@ function weekLabel(monday) {
 function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, updateTasks, currentUser, isAdmin }) {
   const [openUserId, setOpenUserId] = useState(null);
 
+  useEffect(() => {
+    const handler = () => setOpenUserId(null);
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, []);
+
+  const openPersonDetail = (id) => {
+    try {
+      window.history.pushState({ jtmDetail: "person" }, "");
+    } catch (e) {}
+    setOpenUserId(id);
+  };
+
+  const closePersonDetail = () => {
+    setOpenUserId(null);
+    try {
+      if (window.history.state && window.history.state.jtmDetail === "person") {
+        window.history.back();
+      }
+    } catch (e) {}
+  };
+
   const PERSON_COLORS = ["#087FBE", "#FF6F4D", "#3976BA", "#7E57C2", "#C2872F", "#3E8E5B"];
   const colorFor = (id) => {
     let h = 0;
@@ -2077,7 +2138,6 @@ function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, upd
   };
 
   const canView = (u) => isAdmin || u.id === currentUser.id || (u.weeklyViewers || []).includes(currentUser.id);
-  const visibleUsers = users.filter(canView);
   const thisMonday = isoDate(mondayOf(new Date()));
 
   const statsFor = (userId) => {
@@ -2085,7 +2145,7 @@ function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, upd
     return { total: items.length, done: items.filter((w) => w.done).length };
   };
 
-  const openUser = visibleUsers.find((u) => u.id === openUserId);
+  const openUser = users.find((u) => u.id === openUserId && canView(u));
 
   if (openUser) {
     return (
@@ -2096,7 +2156,7 @@ function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, upd
         projects={projects}
         tasks={tasks}
         currentUser={currentUser}
-        onBack={() => setOpenUserId(null)}
+        onBack={closePersonDetail}
       />
     );
   }
@@ -2105,29 +2165,41 @@ function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, upd
     <div className="tabPane">
       <div className="paneHeaderRow">
         <h3 className="paneTitle">
-          이번 주 주요 수행업무 <span className="countBadge">{visibleUsers.length}</span>
+          이번 주 주요 수행업무 <span className="countBadge">{users.length}</span>
         </h3>
       </div>
 
-      {visibleUsers.length === 0 && (
+      {users.length === 0 && (
         <div className="emptyState">
           <Users size={22} />
-          <p>열람 권한이 있는 팀원이 없어요. 관리자에게 열람 권한을 요청해주세요.</p>
+          <p>등록된 팀원이 없어요.</p>
         </div>
       )}
 
       <div className="projCardGrid">
-        {visibleUsers.map((u) => {
+        {users.map((u) => {
           const stats = statsFor(u.id);
+          const entryAllowed = canView(u);
           return (
-            <div key={u.id} className="projCard weeklyPersonCard" onClick={() => setOpenUserId(u.id)}>
+            <div
+              key={u.id}
+              className={"projCard weeklyPersonCard" + (entryAllowed ? "" : " locked")}
+              onClick={() => entryAllowed && openPersonDetail(u.id)}
+              style={{ cursor: entryAllowed ? "pointer" : "default" }}
+            >
               <div className="weeklyAvatar" style={{ background: colorFor(u.id) }}>
                 {u.name.trim().charAt(0)}
               </div>
               <div className="projCardTitle">{u.name}</div>
-              <div className="projCardMeta">
-                {stats.total === 0 ? "이번 주 업무 없음" : `${stats.done} / ${stats.total}건 완료`}
-              </div>
+              {entryAllowed ? (
+                <div className="projCardMeta">
+                  {stats.total === 0 ? "이번 주 업무 없음" : `${stats.done} / ${stats.total}건 완료`}
+                </div>
+              ) : (
+                <div className="projAccessTag">
+                  <Lock size={10} /> 접근 권한이 없어요
+                </div>
+              )}
             </div>
           );
         })}
@@ -2139,7 +2211,7 @@ function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, upd
 function WeeklyPersonDetailPage({ user, weeklyTasks, updateWeeklyTasks, projects, tasks, currentUser, onBack }) {
   const [weekMonday, setWeekMonday] = useState(mondayOf(new Date()));
   const [quickAdd, setQuickAdd] = useState("");
-  const [collapsed, setCollapsed] = useState({});
+  const [openId, setOpenId] = useState(null);
   const [commentDraft, setCommentDraft] = useState({});
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
@@ -2248,57 +2320,60 @@ function WeeklyPersonDetailPage({ user, weeklyTasks, updateWeeklyTasks, projects
       <div className="taskCardList">
         {items.length === 0 && <p className="mutedText">이 주에 등록된 주요 업무가 없어요.</p>}
         {items.map((w) => {
-          const isCollapsed = collapsed[w.id];
+          const isOpen = openId === w.id;
           const linkedProject = projects.find((p) => p.id === w.linkedProjectId);
           const projectTasks = tasks.filter((t) => t.projectId === w.linkedProjectId && t.type !== "memo");
+          const commentCount = (w.comments || []).length;
 
           return (
-            <div className="taskCard" key={w.id}>
-              <div className="taskCardTop">
+            <div className="announceCard" key={w.id}>
+              <button className="announceRow" onClick={() => setOpenId(isOpen ? null : w.id)}>
                 <span className={"statusPill" + (w.done ? " done" : "")}>{w.done ? "완료" : "진행 중"}</span>
-                {w.updatedBy && (
-                  <span className="taskUpdatedMeta">
-                    최종 수정 {w.updatedBy} · {timeAgo(w.updatedAt || Date.now())}
-                  </span>
-                )}
-                <button
-                  className="iconBtn"
-                  onClick={() => setCollapsed((c) => ({ ...c, [w.id]: !isCollapsed }))}
-                  title={isCollapsed ? "펼치기" : "접기"}
-                >
-                  {isCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
-                </button>
-                {confirmDeleteId === w.id ? (
-                  <div className="projDeleteConfirm">
-                    <button className="btnDangerSmall" onClick={() => deleteItem(w.id)}>
-                      삭제
-                    </button>
-                    <button className="btnGhost small" onClick={() => setConfirmDeleteId(null)}>
-                      취소
-                    </button>
+                <span className="announceRowPreview">{w.text}</span>
+                {commentCount > 0 && <span className="announceRowCommentCount">💬 {commentCount}</span>}
+                <span className="announceRowToggle">
+                  {isOpen ? "접기" : "열기"}
+                  {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                </span>
+              </button>
+
+              {isOpen && (
+                <div className="announceDetail">
+                  <div className="taskCardTop">
+                    {w.updatedBy && (
+                      <span className="taskUpdatedMeta">
+                        최종 수정 {w.updatedBy} · {timeAgo(w.updatedAt || Date.now())}
+                      </span>
+                    )}
+                    {confirmDeleteId === w.id ? (
+                      <div className="projDeleteConfirm">
+                        <button className="btnDangerSmall" onClick={() => deleteItem(w.id)}>
+                          삭제
+                        </button>
+                        <button className="btnGhost small" onClick={() => setConfirmDeleteId(null)}>
+                          취소
+                        </button>
+                      </div>
+                    ) : (
+                      <button className="iconBtn danger" onClick={() => setConfirmDeleteId(w.id)} title="삭제">
+                        <Trash2 size={15} />
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  <button className="iconBtn danger" onClick={() => setConfirmDeleteId(w.id)} title="삭제">
-                    <Trash2 size={15} />
-                  </button>
-                )}
-              </div>
 
-              <div
-                className="taskCardTitle"
-                contentEditable
-                suppressContentEditableWarning
-                onBlur={(e) => {
-                  const text = e.currentTarget.textContent.trim();
-                  if (text && text !== w.text) patchItem(w.id, { text });
-                  else e.currentTarget.textContent = w.text;
-                }}
-              >
-                {w.text}
-              </div>
+                  <div
+                    className="taskCardTitle"
+                    contentEditable
+                    suppressContentEditableWarning
+                    onBlur={(e) => {
+                      const text = e.currentTarget.textContent.trim();
+                      if (text && text !== w.text) patchItem(w.id, { text });
+                      else e.currentTarget.textContent = w.text;
+                    }}
+                  >
+                    {w.text}
+                  </div>
 
-              {!isCollapsed && (
-                <>
                   <button className="statusToggleBtn weeklyStatusBtn" onClick={() => patchItem(w.id, { done: !w.done })}>
                     {w.done ? <Circle size={13} /> : <CheckCircle2 size={13} />}
                     {w.done ? "진행중으로" : "완료 처리"}
@@ -2370,7 +2445,7 @@ function WeeklyPersonDetailPage({ user, weeklyTasks, updateWeeklyTasks, projects
                       ))}
                     </select>
                   </div>
-                </>
+                </div>
               )}
             </div>
           );
@@ -2947,6 +3022,16 @@ export default function JetemaWorkspace() {
 
   const [session, setSession] = useState(null); // logged-in user object
   const [tab, setTab] = useState("home");
+  const [projectsResetKey, setProjectsResetKey] = useState(0);
+  const [weeklyResetKey, setWeeklyResetKey] = useState(0);
+
+  // Clicking a nav tab always returns to that section's main card view,
+  // even if a detail page (project / person) was open inside it.
+  const selectTab = (next) => {
+    if (next === "projects") setProjectsResetKey((k) => k + 1);
+    if (next === "weekly") setWeeklyResetKey((k) => k + 1);
+    setTab(next);
+  };
 
   const domains = [postsD, projectsD, tasksD, teamsD, usersD, announcementsD, weeklyTasksD, dailyTasksD, homeImageD];
   const allLoaded = domains.every((d) => d.status !== "loading");
@@ -3038,19 +3123,19 @@ export default function JetemaWorkspace() {
       )}
 
       <nav className="tabs">
-        <button className={"tabBtn" + (tab === "home" ? " active" : "")} onClick={() => setTab("home")}>
+        <button className={"tabBtn" + (tab === "home" ? " active" : "")} onClick={() => selectTab("home")}>
           <Home size={15} /> 홈
         </button>
-        <button className={"tabBtn" + (tab === "feed" ? " active" : "")} onClick={() => setTab("feed")}>
+        <button className={"tabBtn" + (tab === "feed" ? " active" : "")} onClick={() => selectTab("feed")}>
           <Rss size={15} /> 공지
         </button>
-        <button className={"tabBtn" + (tab === "projects" ? " active" : "")} onClick={() => setTab("projects")}>
+        <button className={"tabBtn" + (tab === "projects" ? " active" : "")} onClick={() => selectTab("projects")}>
           <FolderKanban size={15} /> 프로젝트
         </button>
-        <button className={"tabBtn" + (tab === "weekly" ? " active" : "")} onClick={() => setTab("weekly")}>
+        <button className={"tabBtn" + (tab === "weekly" ? " active" : "")} onClick={() => selectTab("weekly")}>
           <Calendar size={15} /> 이번주 주요업무
         </button>
-        <button className={"tabBtn" + (tab === "daily" ? " active" : "")} onClick={() => setTab("daily")}>
+        <button className={"tabBtn" + (tab === "daily" ? " active" : "")} onClick={() => selectTab("daily")}>
           <ListTodo size={15} /> 오늘의 업무
         </button>
         {isAdmin && (
@@ -3074,6 +3159,7 @@ export default function JetemaWorkspace() {
         )}
         {tab === "projects" && (
           <ProjectsTab
+            key={projectsResetKey}
             projects={projectsD.value}
             updateProjects={projectsD.update}
             tasks={tasksD.value}
@@ -3087,6 +3173,7 @@ export default function JetemaWorkspace() {
         )}
         {tab === "weekly" && (
           <WeeklyTab
+            key={weeklyResetKey}
             weeklyTasks={weeklyTasksD.value}
             updateWeeklyTasks={weeklyTasksD.update}
             users={usersD.value.filter((u) => u.status === "approved")}
@@ -3406,6 +3493,8 @@ const CSS = `
   padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; cursor: grab;
 }
 .projCard:active { cursor: grabbing; }
+.projCard.locked { background: var(--bg); opacity: 0.75; cursor: default; }
+.projCard.locked .dragHandle { visibility: hidden; }
 .projCardTop { display: flex; align-items: center; gap: 5px; }
 .dragHandle { color: var(--ink-soft); flex-shrink: 0; cursor: grab; }
 .projTeamBadge {
@@ -3433,11 +3522,11 @@ const CSS = `
 }
 .weeklyAvatar.small { width: 26px; height: 26px; font-size: 12px; margin-bottom: 0; }
 
-.weekNavRow { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.weekNavRow { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .weekNavLabel { font-size: 12.5px; font-weight: 700; }
 .weekNowTag { background: var(--tint); color: var(--teal-deep); font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 20px; }
 .weekNowBtn { background: var(--bg); color: var(--ink-soft); border: none; font-size: 10.5px; font-weight: 700; padding: 4px 9px; border-radius: 20px; cursor: pointer; }
-.weekDoneSummary { margin-left: auto; font-size: 11.5px; color: var(--ink-soft); font-family: 'Noto Sans KR', sans-serif; }
+.weekDoneSummary { font-size: 11.5px; color: var(--ink-soft); font-family: 'Noto Sans KR', sans-serif; }
 .weeklyStatusBtn { margin-left: 0; margin-bottom: 4px; }
 .linkedTaskRow { display: flex; gap: 8px; }
 .linkedTaskRow .formSelect.grow { flex: 1; min-width: 0; }
