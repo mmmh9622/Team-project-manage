@@ -22,9 +22,24 @@ const KEYS = {
   weeklyTasks: "jtm-v2-weekly-tasks",
   dailyTasks: "jtm-v2-daily-tasks",
   homeImage: "jtm-v2-home-image",
+  notifications: "jtm-v2-notifications",
 };
 
 const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+
+function pushNotification(updateNotifications, recipientUserId, type, message) {
+  if (!recipientUserId || !updateNotifications) return;
+  updateNotifications((prev) => [
+    ...prev,
+    {
+      id: "notif_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      userId: recipientUserId,
+      type,
+      message,
+      ts: Date.now(),
+    },
+  ]);
+}
 
 function withTimeout(promise, ms = 6000) {
   return Promise.race([
@@ -360,7 +375,7 @@ function AuthScreen({ users, updateUsers, teams, onLogin }) {
    posting. Defaults to showing the last 30 days, with a toggle
    to reveal the full history.
    ============================================================ */
-function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser }) {
+function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser, users, updateNotifications }) {
   const [draft, setDraft] = useState("");
   const [draftImportant, setDraftImportant] = useState(false);
   const [draftDate, setDraftDate] = useState(isoDate(new Date()));
@@ -394,6 +409,14 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
       },
       ...prev,
     ]);
+    if (updateNotifications && users) {
+      const preview = text.length > 40 ? text.slice(0, 40) + "..." : text;
+      users
+        .filter((u) => u.id !== currentUser.id)
+        .forEach((u) => {
+          pushNotification(updateNotifications, u.id, "announcement", `${currentUser.name}님이 새 공지를 등록했어요: ${preview}`);
+        });
+    }
     setDraft("");
     setDraftImportant(false);
     setDraftDate(isoDate(new Date()));
@@ -642,13 +665,15 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
 /* ============================================================
    FEED TAB
    ============================================================ */
-function FeedTab({ announcements, updateAnnouncements, currentUser }) {
+function FeedTab({ announcements, updateAnnouncements, currentUser, users, updateNotifications }) {
   return (
     <div className="tabPane">
       <AnnouncementsPanel
         announcements={announcements}
         updateAnnouncements={updateAnnouncements}
         currentUser={currentUser}
+        users={users}
+        updateNotifications={updateNotifications}
       />
     </div>
   );
@@ -667,6 +692,7 @@ function ProjectsTab({
   currentUser,
   isAdmin,
   accessibleTeams,
+  updateNotifications,
 }) {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
@@ -787,6 +813,7 @@ function ProjectsTab({
           deleteProject(openProject.id);
         }}
         currentUser={currentUser}
+        updateNotifications={updateNotifications}
       />
     );
   }
@@ -978,6 +1005,60 @@ function autoResize(el) {
 // useLayoutEffect on every value change (including the very first render),
 // so it never depends on ref-callback/font-load timing quirks -- the box
 // is always the right height for whatever text is actually in it.
+// Compact multi-select for assigning several people to one task. Click the
+// button to open a checkbox list; click outside to close.
+function MultiAssigneeSelect({ users, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const toggle = (name) => {
+    const has = selected.includes(name);
+    onChange(has ? selected.filter((n) => n !== name) : [...selected, name]);
+  };
+
+  const label =
+    selected.length === 0
+      ? "미배정"
+      : selected.length <= 2
+      ? selected.join(", ")
+      : `${selected[0]} 외 ${selected.length - 1}명`;
+
+  return (
+    <div className="assigneeSelectWrap" ref={wrapRef}>
+      <button
+        type="button"
+        className="formSelect assigneeSelectBtn"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((o) => !o);
+        }}
+      >
+        {label}
+      </button>
+      {open && (
+        <div className="assigneeDropdown" onClick={(e) => e.stopPropagation()}>
+          {users.length === 0 && <p className="mutedText">등록된 팀원이 없어요.</p>}
+          {users.map((u) => (
+            <label key={u.id} className="teamCheck">
+              <input type="checkbox" checked={selected.includes(u.name)} onChange={() => toggle(u.name)} />
+              {u.name}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AutoGrowTextarea({ value, onCommit, className, placeholder, rows = 2 }) {
   const [text, setText] = useState(value || "");
 
@@ -1006,7 +1087,7 @@ function AutoGrowTextarea({ value, onCommit, className, placeholder, rows = 2 })
    with subtasks/comments, a Gantt view, JSON backup, and drag
    reordering.
    ============================================================ */
-function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBack, onDelete, currentUser }) {
+function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBack, onDelete, currentUser, updateNotifications }) {
   const [name, setName] = useState(project.name);
   const [editingName, setEditingName] = useState(false);
   const [showAccess, setShowAccess] = useState(false);
@@ -1079,7 +1160,7 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
         ? { ...base, body: "" }
         : {
             ...base,
-            assignee: "",
+            assignees: [],
             done: false,
             description: "",
             subtasks: [],
@@ -1135,6 +1216,13 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
     patchTask(taskId, { subtasks: (task.subtasks || []).filter((s) => s.id !== subId) });
   };
 
+  const editSubtask = (taskId, subId, text) => {
+    const task = tasks.find((t) => t.id === taskId);
+    patchTask(taskId, {
+      subtasks: (task.subtasks || []).map((s) => (s.id === subId ? { ...s, text } : s)),
+    });
+  };
+
   const addComment = (taskId) => {
     const text = (commentDraft[taskId] || "").trim();
     if (!text) return;
@@ -1143,6 +1231,20 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
       comments: [...(task.comments || []), { id: "c_" + Date.now(), text, author: currentUser.name, ts: Date.now() }],
     });
     setCommentDraft((d) => ({ ...d, [taskId]: "" }));
+
+    const assigneeNames = task.assignees || (task.assignee ? [task.assignee] : []);
+    const preview = text.length > 40 ? text.slice(0, 40) + "..." : text;
+    assigneeNames.forEach((name) => {
+      const recipient = users.find((u) => u.name === name);
+      if (recipient && recipient.id !== currentUser.id) {
+        pushNotification(
+          updateNotifications,
+          recipient.id,
+          "comment",
+          `${currentUser.name}님이 '${task.text}'에 댓글을 남겼어요: ${preview}`
+        );
+      }
+    });
   };
 
   const backupProject = () => {
@@ -1153,7 +1255,7 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
       업무명: t.text,
       상태: t.done ? "완료" : "진행 중",
       카테고리: t.category || "",
-      담당자: t.assignee || "",
+      담당자: (t.assignees && t.assignees.length ? t.assignees.join(", ") : t.assignee || ""),
       시작일: t.startDate || "",
       마감일: t.dueDate || "",
       텍스트: t.description || "",
@@ -1375,7 +1477,10 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
               text: taskName,
               team: project.team || "",
               projectId: project.id,
-              assignee: String(pick(row, ["담당자"])).trim(),
+              assignees: String(pick(row, ["담당자"]))
+                .split(/[,\/·]/)
+                .map((s) => s.trim())
+                .filter(Boolean),
               category: String(pick(row, ["카테고리", "중분류"])).trim(),
               done: status === "완료",
               description: String(pick(row, ["텍스트"])).trim(),
@@ -1737,31 +1842,34 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
                         최종 수정 {t.updatedBy} · {timeAgo(t.updatedAt || Date.now())}
                       </span>
                     )}
-                    <button
-                      className="iconBtn"
-                      onClick={() => setCollapsed((c) => ({ ...c, [t.id]: !isCollapsed }))}
-                      title={isCollapsed ? "펼치기" : "접기"}
-                    >
-                      {isCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
-                    </button>
-                    {confirmDeleteTaskId === t.id ? (
-                      <div className="projDeleteConfirm">
-                        <button className="btnDangerSmall" onClick={() => deleteTask(t.id)}>
-                          삭제
-                        </button>
-                        <button className="btnGhost small" onClick={() => setConfirmDeleteTaskId(null)}>
-                          취소
-                        </button>
-                      </div>
-                    ) : (
+                    <div className="taskTopRightActions">
                       <button
-                        className="iconBtn danger"
-                        onClick={() => setConfirmDeleteTaskId(t.id)}
-                        title="업무 삭제"
+                        className="expandToggleBtn"
+                        onClick={() => setCollapsed((c) => ({ ...c, [t.id]: !isCollapsed }))}
+                        title={isCollapsed ? "펼치기" : "접기"}
                       >
-                        <Trash2 size={15} />
+                        {isCollapsed ? "열기" : "접기"}
+                        {isCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
                       </button>
-                    )}
+                      {confirmDeleteTaskId === t.id ? (
+                        <div className="projDeleteConfirm">
+                          <button className="btnDangerSmall" onClick={() => deleteTask(t.id)}>
+                            삭제
+                          </button>
+                          <button className="btnGhost small" onClick={() => setConfirmDeleteTaskId(null)}>
+                            취소
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          className="iconBtn danger"
+                          onClick={() => setConfirmDeleteTaskId(t.id)}
+                          title="업무 삭제"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div
@@ -1793,18 +1901,11 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
                           </label>
                           <label className="taskFieldLabel">
                             담당자
-                            <select
-                              className="formSelect"
-                              value={t.assignee || ""}
-                              onChange={(e) => patchTask(t.id, { assignee: e.target.value })}
-                            >
-                              <option value="">미배정</option>
-                              {users.map((u) => (
-                                <option key={u.id} value={u.name}>
-                                  {u.name}
-                                </option>
-                              ))}
-                            </select>
+                            <MultiAssigneeSelect
+                              users={users}
+                              selected={t.assignees || (t.assignee ? [t.assignee] : [])}
+                              onChange={(names) => patchTask(t.id, { assignees: names })}
+                            />
                           </label>
                           <label className="taskFieldLabel">
                             시작일
@@ -1868,7 +1969,19 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
                                     checked={s.done}
                                     onChange={() => toggleSubtask(t.id, s.id)}
                                   />
-                                  <span className={s.done ? "done" : ""}>{s.text}</span>
+                                  <span
+                                    className={s.done ? "done" : ""}
+                                    contentEditable
+                                    suppressContentEditableWarning
+                                    onClick={(e) => e.preventDefault()}
+                                    onBlur={(e) => {
+                                      const text = e.currentTarget.textContent.trim();
+                                      if (text && text !== s.text) editSubtask(t.id, s.id, text);
+                                      else e.currentTarget.textContent = s.text;
+                                    }}
+                                  >
+                                    {s.text}
+                                  </span>
                                 </label>
                                 <button className="subtaskRemove" onClick={() => removeSubtask(t.id, s.id)}>
                                   <X size={12} />
@@ -2105,7 +2218,7 @@ function weekLabel(monday) {
   return `${monday.getFullYear()}년 ${monday.getMonth() + 1}월 ${weekNum}주차 (${fmt(monday)} ~ ${fmt(sunday)})`;
 }
 
-function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, updateTasks, currentUser, isAdmin }) {
+function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, updateTasks, currentUser, isAdmin, updateNotifications }) {
   const [openUserId, setOpenUserId] = useState(null);
 
   useEffect(() => {
@@ -2157,6 +2270,7 @@ function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, upd
         tasks={tasks}
         currentUser={currentUser}
         onBack={closePersonDetail}
+        updateNotifications={updateNotifications}
       />
     );
   }
@@ -2208,7 +2322,7 @@ function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, upd
   );
 }
 
-function WeeklyPersonDetailPage({ user, weeklyTasks, updateWeeklyTasks, projects, tasks, currentUser, onBack }) {
+function WeeklyPersonDetailPage({ user, weeklyTasks, updateWeeklyTasks, projects, tasks, currentUser, onBack, updateNotifications }) {
   const [weekMonday, setWeekMonday] = useState(mondayOf(new Date()));
   const [quickAdd, setQuickAdd] = useState("");
   const [openId, setOpenId] = useState(null);
@@ -2265,6 +2379,16 @@ function WeeklyPersonDetailPage({ user, weeklyTasks, updateWeeklyTasks, projects
       comments: [...(item.comments || []), { id: "c_" + Date.now(), text, author: currentUser.name, ts: Date.now() }],
     });
     setCommentDraft((d) => ({ ...d, [id]: "" }));
+
+    if (user.id !== currentUser.id) {
+      const preview = text.length > 40 ? text.slice(0, 40) + "..." : text;
+      pushNotification(
+        updateNotifications,
+        user.id,
+        "comment",
+        `${currentUser.name}님이 '${item.text}'에 댓글을 남겼어요: ${preview}`
+      );
+    }
   };
 
   return (
@@ -2339,9 +2463,9 @@ function WeeklyPersonDetailPage({ user, weeklyTasks, updateWeeklyTasks, projects
 
               {isOpen && (
                 <div className="announceDetail">
-                  <div className="taskCardTop">
+                  <div className="taskCardTop weeklyDetailTop">
                     {w.updatedBy && (
-                      <span className="taskUpdatedMeta">
+                      <span className="taskUpdatedMeta noAutoMargin">
                         최종 수정 {w.updatedBy} · {timeAgo(w.updatedAt || Date.now())}
                       </span>
                     )}
@@ -2786,6 +2910,10 @@ function DailyTasksPanel({ dailyTasks, updateDailyTasks, currentUser }) {
     updateDailyTasks((prev) => prev.filter((t) => t.id !== id));
   };
 
+  const editItem = (id, text) => {
+    updateDailyTasks((prev) => prev.map((t) => (t.id === id ? { ...t, text } : t)));
+  };
+
   const backupMonth = () => {
     const sorted = myTasks
       .filter((t) => {
@@ -2878,7 +3006,19 @@ function DailyTasksPanel({ dailyTasks, updateDailyTasks, currentUser }) {
               <div key={t.id} className="dailyItemRow">
                 <label className="dailyItemCheck">
                   <input type="checkbox" checked={t.done} onChange={() => toggleItem(t.id)} />
-                  <span className={t.done ? "done" : ""}>{t.text}</span>
+                  <span
+                    className={t.done ? "done" : ""}
+                    contentEditable
+                    suppressContentEditableWarning
+                    onClick={(e) => e.preventDefault()}
+                    onBlur={(e) => {
+                      const text = e.currentTarget.textContent.trim();
+                      if (text && text !== t.text) editItem(t.id, text);
+                      else e.currentTarget.textContent = t.text;
+                    }}
+                  >
+                    {t.text}
+                  </span>
                 </label>
                 <button className="subtaskRemove" onClick={() => deleteItem(t.id)}>
                   <X size={13} />
@@ -2946,11 +3086,20 @@ function DailyTasksPanel({ dailyTasks, updateDailyTasks, currentUser }) {
    swap out anytime; always normalized to 600x600 (cover-cropped)
    so it displays consistently regardless of the source image size.
    ============================================================ */
-function HomeTab({ homeImage, updateHomeImage, isAdmin }) {
+function HomeTab({ homeImage, updateHomeImage, isAdmin, notifications, updateNotifications }) {
   const fileInputRef = useRef(null);
   const [busy, setBusy] = useState(false);
 
   const triggerUpload = () => fileInputRef.current?.click();
+
+  const dismissNotification = (id) => {
+    updateNotifications((prev) => prev.filter((n) => n.id !== id));
+  };
+
+  const dismissAll = () => {
+    const ids = new Set(notifications.map((n) => n.id));
+    updateNotifications((prev) => prev.filter((n) => !ids.has(n.id)));
+  };
 
   const handleFile = (e) => {
     const file = e.target.files?.[0];
@@ -2983,6 +3132,29 @@ function HomeTab({ homeImage, updateHomeImage, isAdmin }) {
 
   return (
     <div className="tabPane homePane">
+      {notifications.length > 0 && (
+        <div className="notifyPanel">
+          <div className="notifyPanelHeader">
+            <span>알림 {notifications.length}</span>
+            <button className="btnGhost small" onClick={dismissAll}>
+              모두 확인
+            </button>
+          </div>
+          {[...notifications]
+            .sort((a, b) => b.ts - a.ts)
+            .map((n) => (
+              <div className="notifyRow" key={n.id}>
+                <span className="notifyIcon">{n.type === "announcement" ? "📢" : "💬"}</span>
+                <span className="notifyMessage">{n.message}</span>
+                <span className="notifyTime">{timeAgo(n.ts)}</span>
+                <button className="btnGhost small" onClick={() => dismissNotification(n.id)}>
+                  확인
+                </button>
+              </div>
+            ))}
+        </div>
+      )}
+
       {isAdmin && (
         <div className="homeAdminBar">
           <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFile} style={{ display: "none" }} />
@@ -3019,6 +3191,7 @@ export default function JetemaWorkspace() {
   const weeklyTasksD = usePersisted(KEYS.weeklyTasks, []);
   const dailyTasksD = usePersisted(KEYS.dailyTasks, []);
   const homeImageD = usePersisted(KEYS.homeImage, null);
+  const notificationsD = usePersisted(KEYS.notifications, []);
 
   const [session, setSession] = useState(null); // logged-in user object
   const [tab, setTab] = useState("home");
@@ -3033,7 +3206,7 @@ export default function JetemaWorkspace() {
     setTab(next);
   };
 
-  const domains = [postsD, projectsD, tasksD, teamsD, usersD, announcementsD, weeklyTasksD, dailyTasksD, homeImageD];
+  const domains = [postsD, projectsD, tasksD, teamsD, usersD, announcementsD, weeklyTasksD, dailyTasksD, homeImageD, notificationsD];
   const allLoaded = domains.every((d) => d.status !== "loading");
   const anyWarn = domains.some((d) => d.status === "warn");
 
@@ -3148,13 +3321,21 @@ export default function JetemaWorkspace() {
 
       <main className="main">
         {tab === "home" && (
-          <HomeTab homeImage={homeImageD.value} updateHomeImage={homeImageD.update} isAdmin={isAdmin} />
+          <HomeTab
+            homeImage={homeImageD.value}
+            updateHomeImage={homeImageD.update}
+            isAdmin={isAdmin}
+            notifications={notificationsD.value.filter((n) => n.userId === liveSessionUser.id)}
+            updateNotifications={notificationsD.update}
+          />
         )}
         {tab === "feed" && (
           <FeedTab
             announcements={announcementsD.value}
             updateAnnouncements={announcementsD.update}
             currentUser={liveSessionUser}
+            users={usersD.value.filter((u) => u.status === "approved")}
+            updateNotifications={notificationsD.update}
           />
         )}
         {tab === "projects" && (
@@ -3169,6 +3350,7 @@ export default function JetemaWorkspace() {
             currentUser={liveSessionUser}
             isAdmin={isAdmin}
             accessibleTeams={accessibleTeams}
+            updateNotifications={notificationsD.update}
           />
         )}
         {tab === "weekly" && (
@@ -3182,6 +3364,7 @@ export default function JetemaWorkspace() {
             updateTasks={tasksD.update}
             currentUser={liveSessionUser}
             isAdmin={isAdmin}
+            updateNotifications={notificationsD.update}
           />
         )}
         {tab === "daily" && (
@@ -3243,6 +3426,8 @@ const CSS = `
   color: var(--ink);
   min-height: 100vh;
   padding-bottom: 40px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 /* ---- auth screen ---- */
@@ -3280,6 +3465,15 @@ const CSS = `
 
 .homePane { display: flex; flex-direction: column; align-items: center; gap: 14px; }
 .homeAdminBar { align-self: center; }
+.notifyPanel {
+  width: 100%; max-width: 600px; background: var(--bg); border-radius: 12px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
+}
+.notifyPanelHeader { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; font-weight: 700; color: var(--ink-soft); }
+.notifyRow { display: flex; align-items: center; gap: 8px; background: var(--surface); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; }
+.notifyIcon { flex-shrink: 0; }
+.notifyMessage { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notifyTime { flex-shrink: 0; font-size: 10.5px; color: var(--ink-soft); }
 .homeImageBox {
   width: 600px; max-width: 100%; aspect-ratio: 1; border-radius: 12px; overflow: hidden;
   background: var(--bg); display: flex; align-items: center; justify-content: center;
@@ -3571,15 +3765,33 @@ const CSS = `
 .taskCardList { display: flex; flex-direction: column; gap: 10px; }
 .taskCard { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
 .taskCardTop { display: flex; align-items: center; gap: 8px; }
+.weeklyDetailTop { justify-content: flex-start; }
+.weeklyDetailTop .noAutoMargin { margin-left: 0; }
+.weeklyDetailTop .iconBtn { margin-left: 6px; }
 .statusPill { font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 20px; background: var(--tint); color: var(--teal-deep); }
 .statusPill.done { background: var(--bg); color: var(--ink-soft); }
 .taskUpdatedMeta { font-size: 10.5px; color: var(--ink-soft); font-family: 'Noto Sans KR', sans-serif; margin-left: 6px; }
+.taskTopRightActions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.taskTopRightActions .iconBtn, .taskTopRightActions .projDeleteConfirm { margin-left: 0; }
+.expandToggleBtn {
+  display: flex; align-items: center; gap: 3px; border: 1px solid var(--line); background: var(--bg);
+  color: var(--ink); border-radius: 7px; padding: 5px 10px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.expandToggleBtn:hover { border-color: var(--teal); color: var(--teal-deep); background: var(--tint); }
 .taskCardTitle { font-size: 14px; font-weight: 700; outline: none; border-radius: 6px; padding: 2px 4px; margin: -2px -4px; }
 .taskCardTitle:focus { background: var(--bg); }
 .taskCardFieldsRow { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .taskFieldLabel { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--ink-soft); font-weight: 600; }
 .taskFieldLabel.block { margin-top: 4px; }
 .taskFieldLabel .formSelect, .taskFieldLabel .formInput { min-width: 100px; }
+.assigneeSelectWrap { position: relative; }
+.assigneeSelectBtn { cursor: pointer; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.assigneeDropdown {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; box-shadow: 0 4px 14px rgba(0,0,0,0.12); display: flex;
+  flex-direction: column; gap: 6px; min-width: 140px; max-height: 200px; overflow-y: auto;
+}
 .statusToggleBtn {
   display: flex; align-items: center; gap: 5px; border: 1px solid var(--line); background: #fff;
   color: var(--ink-soft); border-radius: 7px; padding: 7px 10px; font-size: 11.5px; cursor: pointer; margin-left: auto;
@@ -3794,5 +4006,17 @@ const CSS = `
   .homeImageBox { width: 100%; }
 
   .securityNotice { font-size: 11px; padding: 7px 12px; }
+
+  /* general text scale-down for mobile readability */
+  .projPageTitle { font-size: 15px; }
+  .dailyTitle { font-size: 13.5px; }
+  .dayNavLabel { font-size: 13px; }
+  .monthNavLabel { font-size: 11.5px; }
+  .paneTitle { font-size: 13px; }
+  .postText { font-size: 13px; }
+  .taskCardTitle { font-size: 13px; }
+  .projCardTitle { font-size: 13px; }
+  .commentText { font-size: 12px; }
+  .authLogoImg { height: 28px; }
 }
 `;
