@@ -363,15 +363,18 @@ function AuthScreen({ users, updateUsers, teams, onLogin }) {
 function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser }) {
   const [draft, setDraft] = useState("");
   const [draftImportant, setDraftImportant] = useState(false);
+  const [draftDate, setDraftDate] = useState(isoDate(new Date()));
   const [showAll, setShowAll] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState("");
+  const [editDate, setEditDate] = useState("");
   const [commentDraft, setCommentDraft] = useState({});
   const [openId, setOpenId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
-  const sorted = [...announcements].sort((a, b) => b.ts - a.ts);
-  const cutoff = Date.now() - ONE_MONTH_MS;
-  const visible = showAll ? sorted : sorted.filter((a) => a.ts >= cutoff);
+  const sorted = [...announcements].sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.ts - a.ts);
+  const cutoffDate = isoDate(new Date(Date.now() - ONE_MONTH_MS));
+  const visible = showAll ? sorted : sorted.filter((a) => (a.date || isoDate(new Date(a.ts))) >= cutoffDate);
   const hiddenCount = sorted.length - visible.length;
 
   const submit = () => {
@@ -383,6 +386,7 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
         text,
         authorId: currentUser.id,
         author: currentUser.name,
+        date: draftDate || isoDate(new Date()),
         ts: Date.now(),
         updatedAt: null,
         comments: [],
@@ -392,6 +396,7 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
     ]);
     setDraft("");
     setDraftImportant(false);
+    setDraftDate(isoDate(new Date()));
   };
 
   const toggleImportant = (id) => {
@@ -403,16 +408,23 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
   const startEdit = (a) => {
     setEditingId(a.id);
     setEditDraft(a.text);
+    setEditDate(a.date || isoDate(new Date(a.ts)));
   };
 
   const saveEdit = (id) => {
     const text = editDraft.trim();
     if (!text) return;
     updateAnnouncements((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, text, updatedAt: Date.now() } : a))
+      prev.map((a) => (a.id === id ? { ...a, text, date: editDate || a.date, updatedAt: Date.now() } : a))
     );
     setEditingId(null);
     setEditDraft("");
+  };
+
+  const deleteAnnouncement = (id) => {
+    updateAnnouncements((prev) => prev.filter((a) => a.id !== id));
+    setConfirmDeleteId(null);
+    setOpenId((cur) => (cur === id ? null : cur));
   };
 
   const submitComment = (id) => {
@@ -466,6 +478,12 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
             />
             ★ 중요 공지로 등록
           </label>
+          <input
+            type="date"
+            className="formInput announceDateInput"
+            value={draftDate}
+            onChange={(e) => setDraftDate(e.target.value)}
+          />
           <button className="btnPrimary" onClick={submit} disabled={!draft.trim()}>
             공지 등록
           </button>
@@ -480,7 +498,7 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
       <div className="announceList">
         {visible.map((a) => {
           const isOpen = openId === a.id;
-          const shortDate = new Date(a.ts).toLocaleDateString("ko-KR", {
+          const shortDate = new Date(a.date || a.ts).toLocaleDateString("ko-KR", {
             month: "2-digit",
             day: "2-digit",
             weekday: "short",
@@ -498,7 +516,6 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
                   <Calendar size={11} />
                   {shortDate}
                 </span>
-                <span className="announceRowAuthor">{a.author}</span>
                 <span className="announceRowPreview">{a.text}</span>
                 {commentCount > 0 && <span className="announceRowCommentCount">💬 {commentCount}</span>}
                 <span className="announceRowToggle">
@@ -515,15 +532,12 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
                       <span className="postAuthor">{a.author}</span>
                       <span className="announceDate">
                         <Calendar size={11} />
-                        {new Date(a.ts).toLocaleDateString("ko-KR", {
+                        {new Date(a.date || a.ts).toLocaleDateString("ko-KR", {
                           year: "numeric",
                           month: "long",
                           day: "numeric",
                           weekday: "short",
                         })}
-                        <span className="announceClock">
-                          {new Date(a.ts).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}
-                        </span>
                         {a.updatedAt && <span className="editedTag"> · 수정됨</span>}
                       </span>
                     </div>
@@ -541,6 +555,25 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
                         수정
                       </button>
                     )}
+                    {a.authorId === currentUser.id &&
+                      (confirmDeleteId === a.id ? (
+                        <div className="deleteConfirmRow">
+                          <button className="btnDangerSmall" onClick={() => deleteAnnouncement(a.id)}>
+                            삭제
+                          </button>
+                          <button className="btnGhost small" onClick={() => setConfirmDeleteId(null)}>
+                            취소
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          className="iconBtn danger"
+                          onClick={() => setConfirmDeleteId(a.id)}
+                          title="삭제"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      ))}
                   </div>
 
                   {editingId === a.id ? (
@@ -550,6 +583,12 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser })
                         onCommit={setEditDraft}
                         className="composerInput autoGrow"
                         rows={2}
+                      />
+                      <input
+                        type="date"
+                        className="formInput announceDateInput"
+                        value={editDate}
+                        onChange={(e) => setEditDate(e.target.value)}
                       />
                       <div className="editActions">
                         <button className="btnPrimary small" onClick={() => saveEdit(a.id)}>
@@ -936,6 +975,19 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [view, setView] = useState("list"); // list | gantt
   const [ganttGranularity, setGanttGranularity] = useState("month"); // month | week
+  const [ganttTrackWidth, setGanttTrackWidth] = useState(900);
+  const ganttScrollRef = useRef(null);
+
+  useEffect(() => {
+    const el = ganttScrollRef.current;
+    if (!el) return;
+    const update = () => setGanttTrackWidth(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [view]);
+
   const [statusFilter, setStatusFilter] = useState("all"); // all | doing | done
   const [search, setSearch] = useState("");
   const [quickAdd, setQuickAdd] = useState("");
@@ -1118,23 +1170,97 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
   };
 
   const exportGanttXlsx = () => {
-    const rows = tasks
-      .filter((t) => t.type !== "memo")
-      .map((t) => ({
-        업무명: t.text,
-        카테고리: t.category || "미분류",
-        상태: t.done ? "완료" : "진행 중",
-        담당자: t.assignee || "",
-        시작일: t.startDate || "",
-        마감일: t.dueDate || "",
-        "기간(일)":
-          t.startDate && t.dueDate
-            ? Math.max(1, Math.round((new Date(t.dueDate) - new Date(t.startDate)) / 86400000))
-            : "",
-      }));
+    const ganttTasksList = tasks.filter((t) => t.type !== "memo");
+    if (ganttTasksList.length === 0) return;
+
+    // Month columns spanning the same date range as the on-screen Gantt.
+    const monthCols = [];
+    const cursor = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
+    while (cursor < rangeEnd) {
+      monthCols.push({ year: cursor.getFullYear(), month: cursor.getMonth() });
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+
+    // Group tasks by category, preserving first-seen order (same grouping as the on-screen Gantt).
+    const groupOrder = [];
+    const groupMap = {};
+    ganttTasksList.forEach((t) => {
+      const cat = t.category?.trim() || "미분류";
+      if (!groupMap[cat]) {
+        groupMap[cat] = [];
+        groupOrder.push(cat);
+      }
+      groupMap[cat].push(t);
+    });
+
+    const HEADER_ROWS = 2;
+    const FIXED_COLS = 2; // 중분류, 소분류
+    const headerRow1 = ["중분류", "소분류"];
+    const headerRow2 = ["", ""];
+    monthCols.forEach((m) => {
+      headerRow1.push(m.year);
+      headerRow2.push(m.month + 1);
+    });
+
+    const aoa = [headerRow1, headerRow2];
+    const fillCells = []; // {r, c} to shade for active months
+    const catMergeRanges = [];
+    let r = HEADER_ROWS;
+
+    groupOrder.forEach((cat) => {
+      const startRow = r;
+      groupMap[cat].forEach((t) => {
+        const row = [cat, t.text];
+        monthCols.forEach((m, ci) => {
+          const monthStart = new Date(m.year, m.month, 1);
+          const monthEnd = new Date(m.year, m.month + 1, 0);
+          let active = false;
+          if (t.startDate && t.dueDate) {
+            const s = new Date(t.startDate);
+            const e = new Date(t.dueDate);
+            active = s <= monthEnd && e >= monthStart;
+          }
+          row.push(active ? "■" : "");
+          if (active) fillCells.push({ r, c: FIXED_COLS + ci });
+        });
+        aoa.push(row);
+        r += 1;
+      });
+      if (r - 1 > startRow) catMergeRanges.push({ s: { r: startRow, c: 0 }, e: { r: r - 1, c: 0 } });
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+    // Merge category cells (vertical) and year header cells (horizontal).
+    const merges = [...catMergeRanges];
+    let colCursor = FIXED_COLS;
+    let mi = 0;
+    while (mi < monthCols.length) {
+      const y = monthCols[mi].year;
+      const startCol = colCursor;
+      while (mi < monthCols.length && monthCols[mi].year === y) {
+        mi += 1;
+        colCursor += 1;
+      }
+      if (colCursor - 1 > startCol) merges.push({ s: { r: 0, c: startCol }, e: { r: 0, c: colCursor - 1 } });
+    }
+    ws["!merges"] = merges;
+
+    // Column widths: narrow month columns, wider category/task-name columns.
+    ws["!cols"] = [{ wch: 12 }, { wch: 30 }, ...monthCols.map(() => ({ wch: 4 }))];
+
+    // Best-effort cell shading -- Excel will still open fine even where
+    // fill support is limited, since the "■" marker already shows the bar.
+    fillCells.forEach(({ r: rr, c: cc }) => {
+      const ref = XLSX.utils.encode_cell({ r: rr, c: cc });
+      if (ws[ref]) {
+        ws[ref].s = { fill: { patternType: "solid", fgColor: { rgb: "FFFF00" }, bgColor: { rgb: "FFFF00" } } };
+      }
+    });
+
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "간트");
-    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    XLSX.utils.book_append_sheet(wb, ws, "간트");
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array", cellStyles: true });
     const blob = new Blob([out], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1355,7 +1481,9 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
       yearGroups.push({ year: p.year, startIndex: i, count: 1 });
     }
   });
-  const columnWidth = ganttGranularity === "week" ? 56 : 92;
+  const columnWidth = ganttGranularity === "week"
+    ? Math.max(40, Math.min(56, (ganttTrackWidth - 220) / periods.length))
+    : Math.max(60, Math.min(92, (ganttTrackWidth - 220) / periods.length));
   const daysPerCol = ganttGranularity === "week" ? 7 : 30.4;
   const pxPerDay = columnWidth / daysPerCol;
   const totalWidth = periods.length * columnWidth;
@@ -1790,7 +1918,7 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
                 </button>
               </div>
 
-              <div className="ganttScroll">
+              <div className="ganttScroll" ref={ganttScrollRef}>
                 <div className="ganttInner" style={{ width: totalWidth + 220 }}>
                   <div className="ganttHeaderRow">
                     <div className="ganttLabel ganttLabelHead">업무</div>
@@ -2852,7 +2980,10 @@ export default function JetemaWorkspace() {
           users={usersD.value}
           updateUsers={usersD.update}
           teams={teamsD.value}
-          onLogin={(u) => setSession(u)}
+          onLogin={(u) => {
+            setSession(u);
+            setTab("home");
+          }}
         />
       </div>
     );
@@ -3193,6 +3324,7 @@ const CSS = `
 .announceComposer { flex-direction: column; align-items: stretch; }
 .announceComposerActions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .importantCheck { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--coral); font-weight: 600; cursor: pointer; }
+.announceDateInput { font-size: 12px; padding: 7px 10px; }
 .announceCard.important { border-color: var(--coral); background: #FFEEE8; }
 .importantDot { color: var(--coral); font-size: 13px; flex-shrink: 0; }
 .importantToggleBtn {
@@ -3270,7 +3402,7 @@ const CSS = `
 
 .projCardGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
 .projCard {
-  border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+  border: 1.5px solid var(--ink-soft); border-radius: 10px; background: var(--surface);
   padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; cursor: grab;
 }
 .projCard:active { cursor: grabbing; }
@@ -3281,11 +3413,12 @@ const CSS = `
   font-weight: 600; color: var(--ink-soft); background: var(--bg); max-width: 64px;
 }
 .projIconBtn {
-  border: none; background: var(--bg); color: var(--ink-soft); border-radius: 6px;
+  border: none; background: var(--bg); color: var(--ink); border-radius: 6px;
   padding: 5px; cursor: pointer; display: flex; margin-left: auto;
 }
-.projIconBtn.danger { color: var(--danger); margin-left: 4px; }
+.projIconBtn.danger { color: var(--danger); margin-left: 2px; }
 .projIconBtn:not(.danger) + .projIconBtn:not(.danger) { margin-left: 4px; }
+.projIconBtn + .projIconBtn.danger { margin-left: 2px; }
 .projDeleteConfirm { display: flex; gap: 4px; margin-left: auto; }
 .projCardBody { display: flex; flex-direction: column; gap: 3px; cursor: pointer; }
 .projColorDot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-bottom: 2px; }
@@ -3428,8 +3561,8 @@ const CSS = `
 .ganttRangeLabel { font-size: 11px; color: var(--ink-soft); font-family: 'Noto Sans KR', sans-serif; }
 .ganttScroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
 .ganttInner { min-width: 100%; }
-.ganttHeaderRow { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); background: var(--bg); position: sticky; top: 0; }
-.ganttLabelHead { display: flex; align-items: center; font-weight: 700; font-size: 11.5px; color: var(--ink-soft); }
+.ganttHeaderRow { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); background: var(--bg); position: sticky; top: 0; z-index: 4; }
+.ganttLabelHead { display: flex; align-items: center; font-weight: 700; font-size: 11.5px; color: var(--ink-soft); background: var(--bg); }
 .ganttHeaderTrackWrap { display: flex; flex-direction: column; }
 .ganttYearRow { position: relative; height: 20px; border-bottom: 1px solid var(--line); }
 .ganttYearCol {
@@ -3441,7 +3574,7 @@ const CSS = `
 .ganttLabel {
   width: 220px; flex-shrink: 0; font-size: 12.5px; font-weight: 600; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; padding: 8px 12px; position: sticky; left: 0;
-  background: var(--surface); border-right: 1px solid var(--line);
+  background: var(--surface); border-right: 1px solid var(--line); z-index: 3;
 }
 .ganttHeaderTrack { position: relative; height: 32px; background: var(--bg); }
 .ganttPeriodCol {
