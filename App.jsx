@@ -27,7 +27,20 @@ const KEYS = {
 
 const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 
-function pushNotification(updateNotifications, recipientUserId, type, message) {
+const DEFAULT_TASK_CATEGORIES = [
+  "개발전략수립",
+  "제제연구",
+  "기술이전(수출용허가)",
+  "기술이전(국내허가)",
+  "기술이전 (화장품)",
+  "비임상시험",
+  "임상전략수립",
+  "제품출시준비/필드테스트",
+  "허가진행/발매",
+  "설계개발문서 작성",
+];
+
+function pushNotification(updateNotifications, recipientUserId, type, message, link) {
   if (!recipientUserId || !updateNotifications) return;
   updateNotifications((prev) => [
     ...prev,
@@ -37,6 +50,7 @@ function pushNotification(updateNotifications, recipientUserId, type, message) {
       type,
       message,
       ts: Date.now(),
+      link: link || null,
     },
   ]);
 }
@@ -376,11 +390,13 @@ function AuthScreen({ users, updateUsers, teams, onLogin }) {
    to reveal the full history.
    ============================================================ */
 function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser, users, updateNotifications }) {
+  const [draftTitle, setDraftTitle] = useState("");
   const [draft, setDraft] = useState("");
   const [draftImportant, setDraftImportant] = useState(false);
   const [draftDate, setDraftDate] = useState(isoDate(new Date()));
   const [showAll, setShowAll] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [editTitleDraft, setEditTitleDraft] = useState("");
   const [editDraft, setEditDraft] = useState("");
   const [editDate, setEditDate] = useState("");
   const [commentDraft, setCommentDraft] = useState({});
@@ -392,13 +408,21 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser, u
   const visible = showAll ? sorted : sorted.filter((a) => (a.date || isoDate(new Date(a.ts))) >= cutoffDate);
   const hiddenCount = sorted.length - visible.length;
 
+  const titleOf = (a) => {
+    if (a.title && a.title.trim()) return a.title;
+    const plain = (a.text || "").replace(/<[^>]*>/g, "").trim();
+    return plain.length > 30 ? plain.slice(0, 30) + "..." : plain || "(제목 없음)";
+  };
+
   const submit = () => {
-    const text = draft.trim();
-    if (!text) return;
+    const title = draftTitle.trim();
+    const body = draft.trim();
+    if (!title) return;
     updateAnnouncements((prev) => [
       {
         id: "ann_" + Date.now(),
-        text,
+        title,
+        text: body,
         authorId: currentUser.id,
         author: currentUser.name,
         date: draftDate || isoDate(new Date()),
@@ -410,13 +434,19 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser, u
       ...prev,
     ]);
     if (updateNotifications && users) {
-      const preview = text.length > 40 ? text.slice(0, 40) + "..." : text;
       users
         .filter((u) => u.id !== currentUser.id)
         .forEach((u) => {
-          pushNotification(updateNotifications, u.id, "announcement", `${currentUser.name}님이 새 공지를 등록했어요: ${preview}`);
+          pushNotification(
+            updateNotifications,
+            u.id,
+            "announcement",
+            `${currentUser.name}님이 새 공지를 등록했어요: ${title}`,
+            { tab: "feed" }
+          );
         });
     }
+    setDraftTitle("");
     setDraft("");
     setDraftImportant(false);
     setDraftDate(isoDate(new Date()));
@@ -430,15 +460,18 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser, u
 
   const startEdit = (a) => {
     setEditingId(a.id);
-    setEditDraft(a.text);
+    setEditTitleDraft(a.title || titleOf(a));
+    setEditDraft(a.text || "");
     setEditDate(a.date || isoDate(new Date(a.ts)));
   };
 
   const saveEdit = (id) => {
-    const text = editDraft.trim();
-    if (!text) return;
+    const title = editTitleDraft.trim();
+    if (!title) return;
     updateAnnouncements((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, text, date: editDate || a.date, updatedAt: Date.now() } : a))
+      prev.map((a) =>
+        a.id === id ? { ...a, title, text: editDraft, date: editDate || a.date, updatedAt: Date.now() } : a
+      )
     );
     setEditingId(null);
     setEditDraft("");
@@ -483,15 +516,18 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser, u
       </div>
 
       <div className="composer announceComposer">
-        <div className="growWrap" data-value={draft}>
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="전체 팀에 공지할 내용을 남겨보세요"
-            className="composerInput autoGrow"
-            rows={2}
-          />
-        </div>
+        <input
+          type="text"
+          className="formInput announceTitleInput"
+          value={draftTitle}
+          onChange={(e) => setDraftTitle(e.target.value)}
+          placeholder="공지 제목"
+        />
+        <RichTextArea
+          value={draft}
+          onCommit={setDraft}
+          placeholder="자세한 내용을 남겨보세요"
+        />
         <div className="announceComposerActions">
           <label className="importantCheck">
             <input
@@ -507,7 +543,7 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser, u
             value={draftDate}
             onChange={(e) => setDraftDate(e.target.value)}
           />
-          <button className="btnPrimary" onClick={submit} disabled={!draft.trim()}>
+          <button className="btnPrimary" onClick={submit} disabled={!draftTitle.trim()}>
             공지 등록
           </button>
         </div>
@@ -539,7 +575,7 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser, u
                   <Calendar size={11} />
                   {shortDate}
                 </span>
-                <span className="announceRowPreview">{a.text}</span>
+                <span className="announceRowPreview">{titleOf(a)}</span>
                 {commentCount > 0 && <span className="announceRowCommentCount">💬 {commentCount}</span>}
                 <span className="announceRowToggle">
                   {isOpen ? "접기" : "열기"}
@@ -601,11 +637,17 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser, u
 
                   {editingId === a.id ? (
                     <div className="editBox">
-                      <AutoGrowTextarea
+                      <input
+                        type="text"
+                        className="formInput announceTitleInput"
+                        value={editTitleDraft}
+                        onChange={(e) => setEditTitleDraft(e.target.value)}
+                        placeholder="공지 제목"
+                      />
+                      <RichTextArea
                         value={editDraft}
                         onCommit={setEditDraft}
-                        className="composerInput autoGrow"
-                        rows={2}
+                        placeholder="자세한 내용을 남겨보세요"
                       />
                       <input
                         type="date"
@@ -623,7 +665,10 @@ function AnnouncementsPanel({ announcements, updateAnnouncements, currentUser, u
                       </div>
                     </div>
                   ) : (
-                    <div className="postText">{a.text}</div>
+                    <>
+                      <div className="announceTitleHeading">{titleOf(a)}</div>
+                      {a.text && <div className="postText" dangerouslySetInnerHTML={{ __html: a.text }} />}
+                    </>
                   )}
 
                   <div className="commentSection">
@@ -693,6 +738,8 @@ function ProjectsTab({
   isAdmin,
   accessibleTeams,
   updateNotifications,
+  pendingOpenId,
+  onConsumePendingOpen,
 }) {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
@@ -715,6 +762,14 @@ function ProjectsTab({
     } catch (e) {}
     setOpenProjectId(id);
   };
+
+  useEffect(() => {
+    if (pendingOpenId) {
+      openProjectDetail(pendingOpenId);
+      onConsumePendingOpen?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOpenId]);
 
   const closeProjectDetail = () => {
     setOpenProjectId(null);
@@ -814,6 +869,7 @@ function ProjectsTab({
         }}
         currentUser={currentUser}
         updateNotifications={updateNotifications}
+        isAdmin={isAdmin}
       />
     );
   }
@@ -822,12 +878,14 @@ function ProjectsTab({
     <div className="tabPane">
       <div className="paneHeaderRow">
         <h3 className="paneTitle">프로젝트</h3>
-        <button className="btnPrimary small" onClick={() => setShowForm((s) => !s)}>
-          <Plus size={14} /> 새 프로젝트
-        </button>
+        {isAdmin && (
+          <button className="btnPrimary small" onClick={() => setShowForm((s) => !s)}>
+            <Plus size={14} /> 새 프로젝트
+          </button>
+        )}
       </div>
 
-      {showForm && (
+      {isAdmin && showForm && (
         <div className="inlineForm">
           <input
             placeholder="프로젝트명"
@@ -886,7 +944,7 @@ function ProjectsTab({
                         <select
                           className="projTeamBadge"
                           value={p.team || ""}
-                          disabled={!entryAllowed}
+                          disabled={!isAdmin}
                           onChange={(e) => updateProject(p.id, { team: e.target.value || null })}
                           onClick={(e) => e.stopPropagation()}
                         >
@@ -899,13 +957,15 @@ function ProjectsTab({
                         </select>
                         {entryAllowed && (
                           <>
-                            <button
-                              className="projIconBtn"
-                              title="접근 권한 / 담당자"
-                              onClick={() => openProjectDetail(p.id)}
-                            >
-                              <Users size={14} />
-                            </button>
+                            {isAdmin && (
+                              <button
+                                className="projIconBtn"
+                                title="접근 권한 / 담당자"
+                                onClick={() => openProjectDetail(p.id)}
+                              >
+                                <Users size={14} />
+                              </button>
+                            )}
                             <button
                               className="projIconBtn"
                               title="수정"
@@ -913,27 +973,28 @@ function ProjectsTab({
                             >
                               <Pencil size={14} />
                             </button>
-                            {confirmDeleteId === p.id ? (
-                              <div className="projDeleteConfirm" onClick={(e) => e.stopPropagation()}>
-                                <button className="btnDangerSmall" onClick={() => deleteProject(p.id)}>
-                                  삭제
+                            {isAdmin &&
+                              (confirmDeleteId === p.id ? (
+                                <div className="projDeleteConfirm" onClick={(e) => e.stopPropagation()}>
+                                  <button className="btnDangerSmall" onClick={() => deleteProject(p.id)}>
+                                    삭제
+                                  </button>
+                                  <button className="btnGhost small" onClick={() => setConfirmDeleteId(null)}>
+                                    취소
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  className="projIconBtn danger"
+                                  title="삭제"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setConfirmDeleteId(p.id);
+                                  }}
+                                >
+                                  <Trash2 size={14} />
                                 </button>
-                                <button className="btnGhost small" onClick={() => setConfirmDeleteId(null)}>
-                                  취소
-                                </button>
-                              </div>
-                            ) : (
-                              <button
-                                className="projIconBtn danger"
-                                title="삭제"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setConfirmDeleteId(p.id);
-                                }}
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            )}
+                              ))}
                           </>
                         )}
                       </div>
@@ -972,10 +1033,12 @@ function ProjectsTab({
                   );
                 })}
 
-                <button className="projCard projCardAdd" onClick={() => setShowForm(true)}>
-                  <Plus size={20} />
-                  <span>새 프로젝트</span>
-                </button>
+                {isAdmin && (
+                  <button className="projCard projCardAdd" onClick={() => setShowForm(true)}>
+                    <Plus size={20} />
+                    <span>새 프로젝트</span>
+                  </button>
+                )}
               </div>
             </div>
           )
@@ -1007,6 +1070,31 @@ function autoResize(el) {
 // is always the right height for whatever text is actually in it.
 // Compact multi-select for assigning several people to one task. Click the
 // button to open a checkbox list; click outside to close.
+// Plain <input> that only commits on blur instead of every keystroke --
+// needed for fields (like task category) that live in a list sorted by
+// "most recently modified", so typing doesn't reorder the list mid-edit.
+function DeferredInput({ value, onCommit, className, placeholder, list }) {
+  const [text, setText] = useState(value || "");
+
+  useEffect(() => {
+    setText(value || "");
+  }, [value]);
+
+  return (
+    <input
+      className={className}
+      list={list}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={() => {
+        if (text !== (value || "")) onCommit(text);
+      }}
+      onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+      placeholder={placeholder}
+    />
+  );
+}
+
 function MultiAssigneeSelect({ users, selected, onChange }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
@@ -1059,6 +1147,97 @@ function MultiAssigneeSelect({ users, selected, onChange }) {
   );
 }
 
+// Contenteditable text field with a collapsible formatting toolbar (bold +
+// a few preset colors) for long task notes that need emphasis. Stores an
+// HTML string. Auto-grows naturally since contenteditable divs size to
+// their content, no JS height-measuring needed.
+const RICH_TEXT_COLORS = ["#10262A", "#C23B3B", "#087FBE", "#3E8E5B", "#C2872F"];
+
+function RichTextArea({ value, onCommit, placeholder }) {
+  const [showToolbar, setShowToolbar] = useState(false);
+  const editorRef = useRef(null);
+  const lastSyncedRef = useRef(value || "");
+
+  useEffect(() => {
+    if (editorRef.current && value !== lastSyncedRef.current) {
+      editorRef.current.innerHTML = value || "";
+      lastSyncedRef.current = value || "";
+    }
+  }, [value]);
+
+  useEffect(() => {
+    if (editorRef.current) editorRef.current.innerHTML = value || "";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const exec = (cmd, arg) => {
+    editorRef.current?.focus();
+    try {
+      document.execCommand(cmd, false, arg);
+    } catch (e) {}
+  };
+
+  const handleBlur = () => {
+    const html = editorRef.current.innerHTML;
+    lastSyncedRef.current = html;
+    if (html !== (value || "")) onCommit(html);
+  };
+
+  const isEmpty = !value || value === "<br>" || value.replace(/<[^>]*>/g, "").trim() === "";
+
+  return (
+    <div className="richTextWrap">
+      <button
+        type="button"
+        className="richToolbarToggle"
+        onClick={() => setShowToolbar((s) => !s)}
+      >
+        <Pencil size={11} /> 서식 {showToolbar ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+      </button>
+      {showToolbar && (
+        <div className="richToolbar">
+          <button
+            type="button"
+            className="richBoldBtn"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => exec("bold")}
+          >
+            B
+          </button>
+          {RICH_TEXT_COLORS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              className="richColorSwatch"
+              style={{ background: c }}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => exec("foreColor", c)}
+              title="글자색"
+            />
+          ))}
+          <button
+            type="button"
+            className="richClearBtn"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => exec("removeFormat")}
+          >
+            서식 지우기
+          </button>
+        </div>
+      )}
+      <div
+        ref={editorRef}
+        className="composerInput richTextEditable"
+        contentEditable
+        suppressContentEditableWarning
+        onBlur={handleBlur}
+        data-empty={isEmpty}
+        data-placeholder={placeholder}
+      />
+    </div>
+  );
+}
+
 function AutoGrowTextarea({ value, onCommit, className, placeholder, rows = 2 }) {
   const [text, setText] = useState(value || "");
 
@@ -1087,7 +1266,7 @@ function AutoGrowTextarea({ value, onCommit, className, placeholder, rows = 2 })
    with subtasks/comments, a Gantt view, JSON backup, and drag
    reordering.
    ============================================================ */
-function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBack, onDelete, currentUser, updateNotifications }) {
+function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBack, onDelete, currentUser, updateNotifications, isAdmin }) {
   const [name, setName] = useState(project.name);
   const [editingName, setEditingName] = useState(false);
   const [showAccess, setShowAccess] = useState(false);
@@ -1114,6 +1293,8 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
   const [collapsed, setCollapsed] = useState({});
   const [subtaskDraft, setSubtaskDraft] = useState({});
   const [commentDraft, setCommentDraft] = useState({});
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [editCommentDraft, setEditCommentDraft] = useState("");
   const [confirmDeleteTaskId, setConfirmDeleteTaskId] = useState(null);
   const [draggedTaskId, setDraggedTaskId] = useState(null);
   const [importInfo, setImportInfo] = useState(null);
@@ -1228,7 +1409,10 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
     if (!text) return;
     const task = tasks.find((t) => t.id === taskId);
     patchTask(taskId, {
-      comments: [...(task.comments || []), { id: "c_" + Date.now(), text, author: currentUser.name, ts: Date.now() }],
+      comments: [
+        ...(task.comments || []),
+        { id: "c_" + Date.now(), text, author: currentUser.name, authorId: currentUser.id, ts: Date.now() },
+      ],
     });
     setCommentDraft((d) => ({ ...d, [taskId]: "" }));
 
@@ -1241,10 +1425,32 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
           updateNotifications,
           recipient.id,
           "comment",
-          `${currentUser.name}님이 '${task.text}'에 댓글을 남겼어요: ${preview}`
+          `${currentUser.name}님이 '${task.text}'에 댓글을 남겼어요: ${preview}`,
+          { tab: "projects", projectId: project.id }
         );
       }
     });
+  };
+
+  const startEditComment = (comment) => {
+    setEditingCommentId(comment.id);
+    setEditCommentDraft(comment.text);
+  };
+
+  const saveEditComment = (taskId, commentId) => {
+    const text = editCommentDraft.trim();
+    if (!text) return;
+    const task = tasks.find((t) => t.id === taskId);
+    patchTask(taskId, {
+      comments: (task.comments || []).map((c) => (c.id === commentId ? { ...c, text, editedAt: Date.now() } : c)),
+    });
+    setEditingCommentId(null);
+    setEditCommentDraft("");
+  };
+
+  const deleteComment = (taskId, commentId) => {
+    const task = tasks.find((t) => t.id === taskId);
+    patchTask(taskId, { comments: (task.comments || []).filter((c) => c.id !== commentId) });
   };
 
   const backupProject = () => {
@@ -1258,7 +1464,7 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
       담당자: (t.assignees && t.assignees.length ? t.assignees.join(", ") : t.assignee || ""),
       시작일: t.startDate || "",
       마감일: t.dueDate || "",
-      텍스트: t.description || "",
+      텍스트: (t.description || "").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " "),
       "세부할일 진행률": `${(t.subtasks || []).filter((s) => s.done).length}/${(t.subtasks || []).length}`,
       "댓글 수": (t.comments || []).length,
       "최종 수정자": t.updatedBy || "",
@@ -1562,7 +1768,7 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
     memo: tasks.filter((t) => t.type === "memo").length,
   };
 
-  const existingCategories = [...new Set(tasks.filter((t) => t.category).map((t) => t.category))];
+  const existingCategories = [...new Set([...DEFAULT_TASK_CATEGORIES, ...tasks.filter((t) => t.category).map((t) => t.category)])];
 
   const filtered = tasks
     .filter((t) => {
@@ -1675,15 +1881,17 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
         )}
       </div>
 
-      <button className="accessToggle" onClick={() => setShowAccess((s) => !s)}>
-        <Lock size={12} />
-        {project.accessUsers && project.accessUsers.length > 0
-          ? `${project.accessUsers.length}명만 접근 가능`
-          : "전체 공개"}
-        {showAccess ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-      </button>
+      {isAdmin && (
+        <button className="accessToggle" onClick={() => setShowAccess((s) => !s)}>
+          <Lock size={12} />
+          {project.accessUsers && project.accessUsers.length > 0
+            ? `${project.accessUsers.length}명만 접근 가능`
+            : "전체 공개"}
+          {showAccess ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </button>
+      )}
 
-      {showAccess && (
+      {isAdmin && showAccess && (
         <div className="projModalSection">
           <div className="projModalLabel">읽기 권한 (사람별 선택, 아무도 선택 안 하면 전체 공개)</div>
           <div className="memberTeams">
@@ -1891,11 +2099,11 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
                         <div className="taskCardFieldsRow">
                           <label className="taskFieldLabel">
                             카테고리
-                            <input
+                            <DeferredInput
                               className="formInput"
                               list="categoryOptions"
                               value={t.category || ""}
-                              onChange={(e) => patchTask(t.id, { category: e.target.value })}
+                              onCommit={(val) => patchTask(t.id, { category: val })}
                               placeholder="예: 안정성"
                             />
                           </label>
@@ -1949,9 +2157,7 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
                       ) : (
                         <>
                           <div className="taskFieldLabel block">텍스트</div>
-                          <AutoGrowTextarea
-                            className="composerInput autoGrow"
-                            rows={2}
+                          <RichTextArea
                             value={t.description || ""}
                             onCommit={(val) => patchTask(t.id, { description: val })}
                             placeholder="설명을 남겨보세요"
@@ -2010,23 +2216,58 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
                         {(t.comments || []).map((c) => (
                           <div className="commentRow" key={c.id}>
                             <Avatar name={c.author} />
-                            <div>
+                            <div className="commentBody">
                               <div className="commentMeta">
                                 <span className="commentAuthor">{c.author}</span>
-                                <span className="commentTime">{new Date(c.ts).toLocaleString("ko-KR")}</span>
+                                <span className="commentTime">
+                                  {new Date(c.ts).toLocaleString("ko-KR")}
+                                  {c.editedAt && <span className="editedTag"> · 수정됨</span>}
+                                </span>
+                                {c.authorId === currentUser.id && editingCommentId !== c.id && (
+                                  <div className="commentActions">
+                                    <button className="commentActionBtn" onClick={() => startEditComment(c)}>
+                                      수정
+                                    </button>
+                                    <button className="commentActionBtn danger" onClick={() => deleteComment(t.id, c.id)}>
+                                      삭제
+                                    </button>
+                                  </div>
+                                )}
                               </div>
-                              <div className="commentText">{c.text}</div>
+                              {editingCommentId === c.id ? (
+                                <div className="commentEditBox">
+                                  <div className="growWrap commentGrowWrap" data-value={editCommentDraft}>
+                                    <textarea
+                                      className="commentInput commentTextarea"
+                                      value={editCommentDraft}
+                                      onChange={(e) => setEditCommentDraft(e.target.value)}
+                                      rows={1}
+                                      autoFocus
+                                    />
+                                  </div>
+                                  <button className="btnPrimary small" onClick={() => saveEditComment(t.id, c.id)}>
+                                    저장
+                                  </button>
+                                  <button className="btnGhost small" onClick={() => setEditingCommentId(null)}>
+                                    취소
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="commentText">{c.text}</div>
+                              )}
                             </div>
                           </div>
                         ))}
                         <div className="commentComposer">
-                          <input
-                            value={commentDraft[t.id] || ""}
-                            onChange={(e) => setCommentDraft((d) => ({ ...d, [t.id]: e.target.value }))}
-                            onKeyDown={(e) => e.key === "Enter" && addComment(t.id)}
-                            placeholder="댓글 남기기"
-                            className="commentInput"
-                          />
+                          <div className="growWrap commentGrowWrap" data-value={commentDraft[t.id] || ""}>
+                            <textarea
+                              value={commentDraft[t.id] || ""}
+                              onChange={(e) => setCommentDraft((d) => ({ ...d, [t.id]: e.target.value }))}
+                              placeholder="댓글 남기기 (Enter로 줄바꿈, 등록 버튼으로 전송)"
+                              className="commentInput commentTextarea"
+                              rows={1}
+                            />
+                          </div>
                           <button className="btnGhost" onClick={() => addComment(t.id)}>
                             <MessageCircle size={14} />
                           </button>
@@ -2153,23 +2394,25 @@ function ProjectDetailPage({ project, users, tasks, updateTasks, onUpdate, onBac
         </div>
       )}
 
-      <div className="projModalFooter">
-        {confirmDelete ? (
-          <>
-            <span className="mutedText">프로젝트를 삭제할까요?</span>
-            <button className="btnDangerSmall" onClick={onDelete}>
-              삭제 확인
+      {isAdmin && (
+        <div className="projModalFooter">
+          {confirmDelete ? (
+            <>
+              <span className="mutedText">프로젝트를 삭제할까요?</span>
+              <button className="btnDangerSmall" onClick={onDelete}>
+                삭제 확인
+              </button>
+              <button className="btnGhost small" onClick={() => setConfirmDelete(false)}>
+                취소
+              </button>
+            </>
+          ) : (
+            <button className="btnGhost small" onClick={() => setConfirmDelete(true)}>
+              <Trash2 size={13} /> 프로젝트 삭제
             </button>
-            <button className="btnGhost small" onClick={() => setConfirmDelete(false)}>
-              취소
-            </button>
-          </>
-        ) : (
-          <button className="btnGhost small" onClick={() => setConfirmDelete(true)}>
-            <Trash2 size={13} /> 프로젝트 삭제
-          </button>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2218,7 +2461,7 @@ function weekLabel(monday) {
   return `${monday.getFullYear()}년 ${monday.getMonth() + 1}월 ${weekNum}주차 (${fmt(monday)} ~ ${fmt(sunday)})`;
 }
 
-function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, updateTasks, currentUser, isAdmin, updateNotifications }) {
+function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, updateTasks, currentUser, isAdmin, updateNotifications, pendingOpenId, onConsumePendingOpen }) {
   const [openUserId, setOpenUserId] = useState(null);
 
   useEffect(() => {
@@ -2233,6 +2476,14 @@ function WeeklyTab({ weeklyTasks, updateWeeklyTasks, users, projects, tasks, upd
     } catch (e) {}
     setOpenUserId(id);
   };
+
+  useEffect(() => {
+    if (pendingOpenId) {
+      openPersonDetail(pendingOpenId);
+      onConsumePendingOpen?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOpenId]);
 
   const closePersonDetail = () => {
     setOpenUserId(null);
@@ -2386,7 +2637,8 @@ function WeeklyPersonDetailPage({ user, weeklyTasks, updateWeeklyTasks, projects
         updateNotifications,
         user.id,
         "comment",
-        `${currentUser.name}님이 '${item.text}'에 댓글을 남겼어요: ${preview}`
+        `${currentUser.name}님이 '${item.text}'에 댓글을 남겼어요: ${preview}`,
+        { tab: "weekly", userId: user.id }
       );
     }
   };
@@ -3086,7 +3338,7 @@ function DailyTasksPanel({ dailyTasks, updateDailyTasks, currentUser }) {
    swap out anytime; always normalized to 600x600 (cover-cropped)
    so it displays consistently regardless of the source image size.
    ============================================================ */
-function HomeTab({ homeImage, updateHomeImage, isAdmin, notifications, updateNotifications }) {
+function HomeTab({ homeImage, updateHomeImage, isAdmin, notifications, updateNotifications, onNavigate }) {
   const fileInputRef = useRef(null);
   const [busy, setBusy] = useState(false);
 
@@ -3147,6 +3399,17 @@ function HomeTab({ homeImage, updateHomeImage, isAdmin, notifications, updateNot
                 <span className="notifyIcon">{n.type === "announcement" ? "📢" : "💬"}</span>
                 <span className="notifyMessage">{n.message}</span>
                 <span className="notifyTime">{timeAgo(n.ts)}</span>
+                {n.link && (
+                  <button
+                    className="btnGhost small"
+                    onClick={() => {
+                      onNavigate?.(n);
+                      dismissNotification(n.id);
+                    }}
+                  >
+                    바로가기
+                  </button>
+                )}
                 <button className="btnGhost small" onClick={() => dismissNotification(n.id)}>
                   확인
                 </button>
@@ -3204,6 +3467,22 @@ export default function JetemaWorkspace() {
     if (next === "projects") setProjectsResetKey((k) => k + 1);
     if (next === "weekly") setWeeklyResetKey((k) => k + 1);
     setTab(next);
+  };
+
+  const [pendingProjectOpen, setPendingProjectOpen] = useState(null);
+  const [pendingWeeklyOpen, setPendingWeeklyOpen] = useState(null);
+
+  const goToNotification = (n) => {
+    if (!n.link) return;
+    if (n.link.tab === "projects" && n.link.projectId) {
+      setPendingProjectOpen(n.link.projectId);
+      setTab("projects");
+    } else if (n.link.tab === "weekly" && n.link.userId) {
+      setPendingWeeklyOpen(n.link.userId);
+      setTab("weekly");
+    } else if (n.link.tab) {
+      setTab(n.link.tab);
+    }
   };
 
   const domains = [postsD, projectsD, tasksD, teamsD, usersD, announcementsD, weeklyTasksD, dailyTasksD, homeImageD, notificationsD];
@@ -3327,6 +3606,7 @@ export default function JetemaWorkspace() {
             isAdmin={isAdmin}
             notifications={notificationsD.value.filter((n) => n.userId === liveSessionUser.id)}
             updateNotifications={notificationsD.update}
+            onNavigate={goToNotification}
           />
         )}
         {tab === "feed" && (
@@ -3351,6 +3631,8 @@ export default function JetemaWorkspace() {
             isAdmin={isAdmin}
             accessibleTeams={accessibleTeams}
             updateNotifications={notificationsD.update}
+            pendingOpenId={pendingProjectOpen}
+            onConsumePendingOpen={() => setPendingProjectOpen(null)}
           />
         )}
         {tab === "weekly" && (
@@ -3365,6 +3647,8 @@ export default function JetemaWorkspace() {
             currentUser={liveSessionUser}
             isAdmin={isAdmin}
             updateNotifications={notificationsD.update}
+            pendingOpenId={pendingWeeklyOpen}
+            onConsumePendingOpen={() => setPendingWeeklyOpen(null)}
           />
         )}
         {tab === "daily" && (
@@ -3606,6 +3890,8 @@ const CSS = `
 .announceComposerActions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .importantCheck { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--coral); font-weight: 600; cursor: pointer; }
 .announceDateInput { font-size: 12px; padding: 7px 10px; }
+.announceTitleInput { font-size: 14px; font-weight: 700; width: 100%; }
+.announceTitleHeading { font-size: 15px; font-weight: 800; margin-bottom: 4px; }
 .announceCard.important { border-color: var(--coral); background: #FFEEE8; }
 .importantDot { color: var(--coral); font-size: 13px; flex-shrink: 0; }
 .importantToggleBtn {
@@ -3661,12 +3947,19 @@ const CSS = `
 
 .commentSection { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .commentRow { display: flex; gap: 8px; }
+.commentBody { flex: 1; min-width: 0; }
 .commentMeta { display: flex; gap: 6px; align-items: baseline; }
 .commentAuthor { font-size: 11.5px; font-weight: 700; }
 .commentTime { font-size: 10px; color: var(--ink-soft); font-family: 'Noto Sans KR', sans-serif; }
-.commentText { font-size: 12.5px; line-height: 1.5; }
-.commentComposer { display: flex; gap: 6px; margin-top: 4px; }
+.commentText { font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.commentActions { display: flex; gap: 8px; margin-left: auto; }
+.commentActionBtn { background: transparent; border: none; color: var(--ink-soft); font-size: 10.5px; cursor: pointer; padding: 0; }
+.commentActionBtn:hover { text-decoration: underline; color: var(--ink); }
+.commentActionBtn.danger:hover { color: var(--danger); }
+.commentEditBox { display: flex; gap: 6px; align-items: flex-end; margin-top: 2px; flex-wrap: wrap; }
+.commentComposer { display: flex; gap: 6px; margin-top: 4px; align-items: flex-end; }
 .commentInput { flex: 1; border: 1px solid var(--line); border-radius: 20px; padding: 7px 13px; font-size: 12.5px; }
+.commentTextarea { border-radius: 14px; font-family: inherit; line-height: 1.4; }
 .commentInput:focus { outline: none; border-color: var(--teal); }
 
 .paneHeaderRow { display: flex; align-items: center; margin-bottom: 14px; }
@@ -3792,6 +4085,36 @@ const CSS = `
   padding: 8px 10px; box-shadow: 0 4px 14px rgba(0,0,0,0.12); display: flex;
   flex-direction: column; gap: 6px; min-width: 140px; max-height: 200px; overflow-y: auto;
 }
+
+.richTextWrap { display: flex; flex-direction: column; gap: 6px; }
+.richToolbarToggle {
+  align-self: flex-start; display: flex; align-items: center; gap: 4px; border: none;
+  background: transparent; color: var(--ink-soft); font-size: 11px; font-weight: 600;
+  cursor: pointer; padding: 2px 0;
+}
+.richToolbarToggle:hover { color: var(--teal-deep); }
+.richToolbar {
+  display: flex; align-items: center; gap: 6px; background: var(--bg); border-radius: 8px; padding: 6px 8px;
+}
+.richBoldBtn {
+  width: 26px; height: 26px; border: 1px solid var(--line); background: var(--surface);
+  border-radius: 6px; font-weight: 800; font-size: 12px; cursor: pointer; color: var(--ink);
+}
+.richColorSwatch {
+  width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.15); cursor: pointer; padding: 0;
+}
+.richClearBtn {
+  border: none; background: transparent; color: var(--ink-soft); font-size: 10.5px; cursor: pointer;
+  margin-left: auto; text-decoration: underline;
+}
+.richTextEditable {
+  min-height: 40px; outline: none; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word;
+}
+.richTextEditable[data-empty="true"]:before {
+  content: attr(data-placeholder); color: var(--ink-soft);
+}
+.richTextEditable b, .richTextEditable strong { font-weight: 800; }
+
 .statusToggleBtn {
   display: flex; align-items: center; gap: 5px; border: 1px solid var(--line); background: #fff;
   color: var(--ink-soft); border-radius: 7px; padding: 7px 10px; font-size: 11.5px; cursor: pointer; margin-left: auto;
@@ -3856,6 +4179,11 @@ const CSS = `
   height: 100%;
 }
 .autoGrow { resize: none; overflow: hidden; max-height: none; }
+.growWrap.commentGrowWrap { flex: 1; }
+.growWrap.commentGrowWrap::after {
+  padding: 7px 13px; font-size: 12.5px; line-height: 1.4; min-height: 34px; white-space: pre-wrap;
+}
+.growWrap.commentGrowWrap > textarea { resize: none; overflow: hidden; max-height: none; }
 
 .ganttWrap { padding-top: 4px; }
 .ganttToolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
