@@ -107,12 +107,19 @@ function usePersisted(key, fallback) {
   const [status, setStatus] = useState("loading");
   const [warnReason, setWarnReason] = useState(null);
   const saveTimer = useRef(null);
+  const valueRef = useRef(fallback);
+  const savingRef = useRef(false);
+
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
 
   useEffect(() => {
     let cancelled = false;
     safeLoad(key, fallback).then((r) => {
       if (cancelled) return;
       setValue(r.value);
+      valueRef.current = r.value;
       setStatus(r.ok ? "ok" : "warn");
       setWarnReason(r.reason || null);
     });
@@ -121,13 +128,33 @@ function usePersisted(key, fallback) {
     };
   }, [key]);
 
+  // Other people can be editing the same data at the same time. Quietly
+  // re-fetch every so often and pick up anything that changed on the
+  // server, so a stale local copy doesn't silently overwrite someone
+  // else's recent addition the next time this tab saves.
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (savingRef.current) return;
+      const r = await safeLoad(key, fallback);
+      if (r.ok && JSON.stringify(r.value) !== JSON.stringify(valueRef.current)) {
+        setValue(r.value);
+        valueRef.current = r.value;
+      }
+    }, 20000);
+    return () => clearInterval(interval);
+  }, [key]);
+
   const update = useCallback(
     (updater) => {
       setValue((prev) => {
         const next = typeof updater === "function" ? updater(prev) : updater;
+        valueRef.current = next;
         clearTimeout(saveTimer.current);
+        savingRef.current = true;
         saveTimer.current = setTimeout(() => {
-          safeSave(key, next);
+          safeSave(key, next).finally(() => {
+            savingRef.current = false;
+          });
         }, 250);
         return next;
       });
@@ -138,6 +165,7 @@ function usePersisted(key, fallback) {
   const clearAndReset = useCallback(async () => {
     await resetKey(key);
     setValue(fallback);
+    valueRef.current = fallback;
     setStatus("ok");
     setWarnReason(null);
   }, [key]);
@@ -4108,7 +4136,8 @@ const CSS = `
   margin-left: auto; text-decoration: underline;
 }
 .richTextEditable {
-  min-height: 40px; outline: none; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word;
+  min-height: 40px; max-height: none; overflow: visible;
+  outline: none; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word;
 }
 .richTextEditable[data-empty="true"]:before {
   content: attr(data-placeholder); color: var(--ink-soft);
@@ -4119,9 +4148,14 @@ const CSS = `
   display: flex; align-items: center; gap: 5px; border: 1px solid var(--line); background: #fff;
   color: var(--ink-soft); border-radius: 7px; padding: 7px 10px; font-size: 11.5px; cursor: pointer; margin-left: auto;
 }
-.subtaskList { display: flex; flex-direction: column; gap: 4px; }
-.subtaskRow { display: flex; align-items: center; gap: 8px; }
-.subtaskCheck { display: flex; align-items: center; gap: 8px; font-size: 13px; flex: 1; cursor: pointer; }
+.subtaskList { display: flex; flex-direction: column; gap: 8px; }
+.subtaskRow { display: flex; align-items: flex-start; gap: 8px; }
+.subtaskCheck { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; flex: 1; min-width: 0; cursor: pointer; }
+.subtaskCheck input[type="checkbox"] { margin-top: 3px; flex-shrink: 0; }
+.subtaskCheck span {
+  flex: 1; min-width: 0; outline: none; white-space: normal;
+  word-break: break-word; overflow-wrap: break-word; line-height: 1.45;
+}
 .subtaskCheck .done { text-decoration: line-through; color: var(--ink-soft); }
 .subtaskRemove { background: transparent; border: none; color: var(--ink-soft); cursor: pointer; padding: 3px; flex-shrink: 0; }
 
