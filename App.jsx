@@ -102,24 +102,62 @@ async function resetKey(key) {
   }
 }
 
+function isIdArray(v) {
+  return Array.isArray(v) && v.every((x) => x && typeof x === "object" && x.id != null);
+}
+function stampOf(x) {
+  return Number(x.updatedAt || x.ts || x.createdAt || 0) || 0;
+}
+// Merge server + local copies of an id-keyed array.
+// - items on both sides: the newer stamp wins (local wins ties)
+// - items only on server: kept unless this client deleted them
+// - items only local: kept if never seen on server (just created here);
+//   dropped if they were on the server before (someone else deleted them)
+function mergeById(server, local, seenIds, deletedIds) {
+  const localMap = new Map(local.map((x) => [x.id, x]));
+  const out = [];
+  const used = new Set();
+  server.forEach((s) => {
+    if (deletedIds.has(s.id)) return;
+    const l = localMap.get(s.id);
+    used.add(s.id);
+    out.push(l && stampOf(l) >= stampOf(s) ? l : s);
+  });
+  local.forEach((l) => {
+    if (used.has(l.id)) return;
+    if (!seenIds.has(l.id)) out.push(l);
+  });
+  return out;
+}
+
 function usePersisted(key, fallback) {
   const [value, setValue] = useState(fallback);
   const [status, setStatus] = useState("loading");
   const [warnReason, setWarnReason] = useState(null);
   const saveTimer = useRef(null);
   const valueRef = useRef(fallback);
-  const savingRef = useRef(false);
+  const editVer = useRef(0); // bumps on every local edit
+  const dirtyRef = useRef(false); // local edit not yet confirmed saved
+  const lastEditAt = useRef(0);
+  const seenIds = useRef(new Set()); // ids known to exist on server
+  const deletedIds = useRef(new Set()); // ids deleted locally, not yet synced
+  const loadedRef = useRef(false);
 
-  useEffect(() => {
-    valueRef.current = value;
-  }, [value]);
+  const noteSeen = (arr) => {
+    if (isIdArray(arr)) arr.forEach((x) => seenIds.current.add(x.id));
+  };
 
   useEffect(() => {
     let cancelled = false;
     safeLoad(key, fallback).then((r) => {
       if (cancelled) return;
-      setValue(r.value);
-      valueRef.current = r.value;
+      // if the user already edited before the load returned, keep their edit
+      if (editVer.current === 0) {
+        setValue(r.value);
+        valueRef.current = r.value;
+      }
+      if (r.ok) noteSeen(r.value);
+      loadedRef.current = r.ok;
       setStatus(r.ok ? "ok" : "warn");
       setWarnReason(r.reason || null);
     });
@@ -128,44 +166,110 @@ function usePersisted(key, fallback) {
     };
   }, [key]);
 
-  // Other people can be editing the same data at the same time. Quietly
-  // re-fetch every so often and pick up anything that changed on the
-  // server, so a stale local copy doesn't silently overwrite someone
-  // else's recent addition the next time this tab saves.
+  // Build what should be saved: server copy merged with local copy.
+  const doSave = useCallback(async () => {
+    const verAtStart = editVer.current;
+    const local = valueRef.current;
+    let toWrite = local;
+    if (isIdArray(local)) {
+      const r = await safeLoad(key, null);
+      if (r.ok && isIdArray(r.value)) {
+        noteSeen(r.value);
+        toWrite = mergeById(r.value, local, seenIds.current, deletedIds.current);
+      }
+    }
+    const ok = await safeSave(key, toWrite);
+    if (ok) {
+      noteSeen(toWrite);
+      if (editVer.current === verAtStart) {
+        dirtyRef.current = false;
+        deletedIds.current = new Set();
+        if (toWrite !== local) {
+          valueRef.current = toWrite;
+          setValue(toWrite);
+        }
+      } else {
+        // user typed more in the meantime: another save is already queued
+      }
+    } else {
+      // keep dirty so the next edit/poll retries instead of dropping data
+      saveTimer.current = setTimeout(doSave, 3000);
+    }
+  }, [key]);
+
+  // Pick up other people's changes without clobbering our own.
   useEffect(() => {
     const interval = setInterval(async () => {
-      if (savingRef.current) return;
+      if (dirtyRef.current) return;
+      if (Date.now() - lastEditAt.current < 4000) return;
+      const el = document.activeElement;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      const ver = editVer.current;
       const r = await safeLoad(key, fallback);
-      if (r.ok && JSON.stringify(r.value) !== JSON.stringify(valueRef.current)) {
-        setValue(r.value);
-        valueRef.current = r.value;
+      if (!r.ok) return;
+      // discard if the user edited while we were fetching
+      if (editVer.current !== ver || dirtyRef.current) return;
+      const cur = valueRef.current;
+      let next = r.value;
+      if (isIdArray(cur) && isIdArray(r.value)) {
+        next = mergeById(r.value, cur, seenIds.current, deletedIds.current);
       }
-    }, 20000);
+      noteSeen(r.value);
+      if (JSON.stringify(next) !== JSON.stringify(cur)) {
+        setValue(next);
+        valueRef.current = next;
+      }
+    }, 15000);
     return () => clearInterval(interval);
   }, [key]);
 
   const update = useCallback(
     (updater) => {
-      setValue((prev) => {
-        const next = typeof updater === "function" ? updater(prev) : updater;
-        valueRef.current = next;
-        clearTimeout(saveTimer.current);
-        savingRef.current = true;
-        saveTimer.current = setTimeout(() => {
-          safeSave(key, next).finally(() => {
-            savingRef.current = false;
-          });
-        }, 250);
-        return next;
-      });
+      const prev = valueRef.current;
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      if (isIdArray(prev) && isIdArray(next)) {
+        const nextIds = new Set(next.map((x) => x.id));
+        prev.forEach((x) => {
+          if (!nextIds.has(x.id)) deletedIds.current.add(x.id);
+        });
+        next.forEach((x) => deletedIds.current.delete(x.id));
+      }
+      valueRef.current = next;
+      editVer.current += 1;
+      dirtyRef.current = true;
+      lastEditAt.current = Date.now();
+      setValue(next);
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(doSave, 250);
     },
-    [key]
+    [key, doSave]
   );
+
+  // flush pending save when the tab is closed / hidden
+  useEffect(() => {
+    const flush = () => {
+      if (dirtyRef.current) {
+        clearTimeout(saveTimer.current);
+        doSave();
+      }
+    };
+    const onVis = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [doSave]);
 
   const clearAndReset = useCallback(async () => {
     await resetKey(key);
     setValue(fallback);
     valueRef.current = fallback;
+    dirtyRef.current = false;
+    loadedRef.current = true;
     setStatus("ok");
     setWarnReason(null);
   }, [key]);
