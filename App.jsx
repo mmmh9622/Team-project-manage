@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { storage } from "./storageAdapter";
 import {
@@ -75,7 +76,10 @@ async function safeLoad(key, fallback) {
     if (String(e.message || e).toLowerCase().includes("timeout")) {
       return { value: fallback, ok: false, reason: "timeout" };
     }
-    return { value: fallback, ok: true };
+    if (String(e.message || e).toLowerCase().includes("not found")) {
+      return { value: fallback, ok: true, empty: true };
+    }
+    return { value: fallback, ok: false, reason: "error" };
   }
 }
 
@@ -113,7 +117,7 @@ function stampOf(x) {
 // - items only on server: kept unless this client deleted them
 // - items only local: kept if never seen on server (just created here);
 //   dropped if they were on the server before (someone else deleted them)
-function mergeById(server, local, seenIds, deletedIds) {
+function mergeById(server, local, seenIds, deletedIds, misses) {
   const localMap = new Map(local.map((x) => [x.id, x]));
   const out = [];
   const used = new Set();
@@ -124,8 +128,14 @@ function mergeById(server, local, seenIds, deletedIds) {
     out.push(l && stampOf(l) >= stampOf(s) ? l : s);
   });
   local.forEach((l) => {
-    if (used.has(l.id)) return;
-    if (!seenIds.has(l.id)) out.push(l);
+    if (used.has(l.id)) { if (misses) misses.delete(l.id); return; }
+    if (!seenIds.has(l.id)) { out.push(l); return; }
+    // seen on server before but absent now: only treat as deleted by someone
+    // else after two consecutive misses (guards against stale reads)
+    if (!misses) { out.push(l); return; }
+    const n = (misses.get(l.id) || 0) + 1;
+    misses.set(l.id, n);
+    if (n < 2) out.push(l);
   });
   return out;
 }
@@ -141,6 +151,7 @@ function usePersisted(key, fallback) {
   const lastEditAt = useRef(0);
   const seenIds = useRef(new Set()); // ids known to exist on server
   const deletedIds = useRef(new Set()); // ids deleted locally, not yet synced
+  const misses = useRef(new Map());
   const loadedRef = useRef(false);
 
   const noteSeen = (arr) => {
@@ -175,7 +186,7 @@ function usePersisted(key, fallback) {
       const r = await safeLoad(key, null);
       if (r.ok && isIdArray(r.value)) {
         noteSeen(r.value);
-        toWrite = mergeById(r.value, local, seenIds.current, deletedIds.current);
+        toWrite = mergeById(r.value, local, seenIds.current, deletedIds.current, null);
       }
     }
     const ok = await safeSave(key, toWrite);
@@ -212,7 +223,7 @@ function usePersisted(key, fallback) {
       const cur = valueRef.current;
       let next = r.value;
       if (isIdArray(cur) && isIdArray(r.value)) {
-        next = mergeById(r.value, cur, seenIds.current, deletedIds.current);
+        next = mergeById(r.value, cur, seenIds.current, deletedIds.current, misses.current);
       }
       noteSeen(r.value);
       if (JSON.stringify(next) !== JSON.stringify(cur)) {
